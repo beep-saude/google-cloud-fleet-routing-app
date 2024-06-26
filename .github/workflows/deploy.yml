@@ -1,0 +1,88 @@
+name: Fleet Routing App Deployment
+concurrency:
+  group: production
+on:
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: 'Log level'
+        required: true
+        default: 'warning'
+        type: choice
+        options:
+          - info
+          - warning
+          - debug
+  push:
+    branches:
+      - main
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      BUILTED_IMAGE_URI: ${{ steps.build_image.outputs.image_uri }}
+      IMAGE_TAG: ${{ steps.build_image.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@0e613a0980cbf65ed5b322eb7a1e075d28913a83
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: 'no'
+      - name: Copy config files from S3
+        id: copy_configs
+        run: |
+          aws s3 sync s3://${{vars.VARS_S3_BUCKET}}/${{vars.APP_NAME_S3_FOLDER}}/ $(pwd)/application/backend/
+          echo "commit_id_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+      - name: Login to Amazon ECR
+        id: login_ecr
+        uses: aws-actions/amazon-ecr-login@62f4f872db3836360b72999f4b87f1ff13310f3a
+      - name: Build, tag, and push image to Amazon ECR
+        id: build_image
+        env:
+          ECR_REGISTRY: ${{ steps.login_ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.copy_configs.outputs.commit_id_short }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f ${{ github.workspace }}/application/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY --all-tags
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+  deploy:
+    name: Deploy ECS
+    needs: build
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@0e613a0980cbf65ed5b322eb7a1e075d28913a83
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Download task definition
+        id: task-def-download
+        run: |
+          aws ecs describe-task-definition --task-definition ${{ vars.TASK_DEFINITION_NAME }} --query taskDefinition > google_cloud_fleet_app_task_definition.json
+      - name: Generate task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@c804dfbdd57f713b6c079302a4c01db7017a36fc
+        with:
+          task-definition: google_cloud_fleet_app_task_definition.json
+          container-name: google-cloud-fleet-app
+          image: ${{ needs.build.outputs.BUILTED_IMAGE_URI }}
+      - name: Deploy Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@df9643053eda01f169e64a0e60233aacca83799a
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ vars.ECS_SERVICE_NAME }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          wait-for-service-stability: true
+  
