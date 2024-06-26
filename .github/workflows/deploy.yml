@@ -37,7 +37,7 @@ jobs:
       - name: Copy config files from S3
         id: copy_configs
         run: |
-          aws s3 sync s3://${{vars.VARS_S3_BUCKET}}/${{vars.APP_NAME_S3_FOLDER}}/ $(pwd)/application/
+          aws s3 sync s3://${{vars.VARS_S3_BUCKET}}/${{vars.APP_NAME_S3_FOLDER}}/ $(pwd)/application/backend/
           echo "commit_id_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
       - name: Login to Amazon ECR
         id: login_ecr
