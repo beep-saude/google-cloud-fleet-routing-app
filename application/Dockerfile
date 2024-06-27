@@ -30,5 +30,5 @@ RUN npm run build
 # copy frontend static content
 COPY --from=build /usr/src/app/dist/out/ /usr/src/app/public/
 
-EXPOSE 8080
+EXPOSE 80
 CMD [ "node", "server.js" ]
