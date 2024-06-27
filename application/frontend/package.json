@@ -76,7 +76,7 @@
     "@types/google.maps": "^3.50.5",
     "@types/jasmine": "^5.1.4",
     "@types/jasminewd2": "~2.0.3",
-    "@types/lodash": "^4.14.168",
+    "@types/lodash": "4.14.168",
     "@types/long": "^4.0.0",
     "@types/node": "^12.11.1",
     "@types/nouislider": "^9.0.7",
