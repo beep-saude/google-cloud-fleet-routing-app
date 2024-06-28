@@ -1,14 +1,21 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import { createSelector } from '@ngrx/store';
-import { VisitRequest } from '../models';
+import { Page, VisitRequest } from '../models';
 import RoutesChartSelectors from './routes-chart.selectors';
 import * as fromVisitRequest from './visit-request.selectors';
 import * as fromVisit from './visit.selectors';
@@ -16,6 +23,9 @@ import PreSolveShipmentSelectors from './pre-solve-shipment.selectors';
 import { fromDispatcherToTurfPoint } from 'src/app/util';
 import { Feature, Point } from '@turf/helpers';
 import { selectMouseOverId } from './ui.selectors';
+import RoutesMetadataSelectors from './routes-metadata.selectors';
+import * as fromUI from './ui.selectors';
+import ShipmentRouteSelectors from './shipment-route.selectors';
 
 export const selectVisitRequests = createSelector(
   fromVisitRequest.selectAll,
@@ -25,18 +35,48 @@ export const selectVisitRequests = createSelector(
 );
 
 export const selectFilteredRouteVisitRequests = createSelector(
-  RoutesChartSelectors.selectFilteredRoutesVisitRequestIds,
+  RoutesChartSelectors.selectRoutes,
+  RoutesChartSelectors.selectFilteredRouteIds,
+  RoutesChartSelectors.selectHasActiveFilters,
+  RoutesMetadataSelectors.selectFilteredRouteIds,
+  RoutesMetadataSelectors.selectHasActiveFilters,
+  fromUI.selectPage,
   selectVisitRequests,
-  (filteredVisitRequestIds, visitRequests) => {
-    if (!filteredVisitRequestIds) {
+  (
+    allRoutes,
+    chartRouteIds,
+    chartHasFilters,
+    tableRouteIds,
+    tableHasFilters,
+    page,
+    visitRequests
+  ) => {
+    const hasFilter = page === Page.RoutesChart ? chartHasFilters : tableHasFilters;
+    const routeIds = page === Page.RoutesChart ? chartRouteIds : new Set(tableRouteIds);
+    if (!hasFilter) {
       return visitRequests;
     }
+    const filteredVisitRequestIds = new Set<number>();
+    allRoutes
+      .filter((route) => routeIds.has(route.id))
+      .forEach((route) => route.visits.forEach((id) => filteredVisitRequestIds.add(id)));
     return visitRequests.filter((v) => filteredVisitRequestIds.has(v.id));
   }
 );
 
+const selectSelectedRoutesVisitsIds = createSelector(
+  RoutesChartSelectors.selectSelectedRoutes,
+  RoutesMetadataSelectors.selectedSelectedRoutesIds,
+  fromUI.selectPage,
+  ShipmentRouteSelectors.selectRoutesVisitIdsFn,
+  (chartSelectedRouteIds, tableSelectedRouteIds, page, routesVisitIdsFn) => {
+    const routeIds = page === Page.RoutesChart ? chartSelectedRouteIds : tableSelectedRouteIds;
+    return routesVisitIdsFn(routeIds);
+  }
+);
+
 export const selectFilteredRouteVisitRequestsSelected = createSelector(
-  RoutesChartSelectors.selectSelectedRoutesVisitIds,
+  selectSelectedRoutesVisitsIds,
   selectFilteredRouteVisitRequests,
   (selectedRouteVisitIds, visitRequests) => {
     return visitRequests.filter((v) => selectedRouteVisitIds.includes(v.id));

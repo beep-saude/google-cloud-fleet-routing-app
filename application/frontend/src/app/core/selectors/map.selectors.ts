@@ -1,17 +1,26 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
 
-import { createSelector } from '@ngrx/store';
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+import { createFeatureSelector, createSelector } from '@ngrx/store';
 import buffer from '@turf/buffer';
 import lineIntersect from '@turf/line-intersect';
 import {
   bufferBounds,
+  computeHeadingAlongPath,
+  durationSeconds,
   findNearestCandidatePointToTargetAlongPath,
   findPathHeadingAtPointOptimized,
   fromDispatcherLatLng,
@@ -21,7 +30,7 @@ import {
   toTurfLineString,
   toTurfPoint,
 } from 'src/app/util';
-import { ILatLng, Page, VisitRequest } from '../models';
+import { ILatLng, Page, TravelMode, ShipmentRoute, VisitRequest } from '../models';
 import * as fromDepot from './depot.selectors';
 import PreSolveShipmentSelectors from './pre-solve-shipment.selectors';
 import PreSolveVehicleSelectors from './pre-solve-vehicle.selectors';
@@ -31,8 +40,15 @@ import { selectPage } from './ui.selectors';
 import * as fromVehicle from './vehicle.selectors';
 import VisitSelectors from './visit.selectors';
 import VisitRequestSelectors from './visit-request.selectors';
+import * as fromMap from '../reducers/map.reducer';
+import { MapLayer, MapLayerId } from '../models/map';
+import TravelSimulatorSelectors from './travel-simulator.selectors';
+import * as fromShipmentRoute from './shipment-route.selectors';
+import Long from 'long';
 
 type MapLatLng = google.maps.LatLng;
+
+export const selectMapState = createFeatureSelector<fromMap.State>(fromMap.mapFeatureKey);
 
 const findAlternativeStartLocation = (path: MapLatLng[]): MapLatLng => {
   const distanceAlongPath = google.maps.geometry.spherical.computeLength(path) / 10;
@@ -139,41 +155,100 @@ export const selectBounds = createSelector(
   }
 );
 
-const getVehicleStartLocationsOnRoute = (
+const getVehicleStartLocationsOnRouteWithHeadings = (
   paths: { [id: number]: MapLatLng[] },
   boundsRadius: number
-): { [id: number]: MapLatLng } => {
+): { [id: number]: { location: MapLatLng; heading: number } } => {
   const occupiedStartLocations: MapLatLng[] = [];
-  const lookup: { [id: number]: MapLatLng } = {};
+  const lookup: { [id: number]: { location: MapLatLng; heading: number } } = {};
   Object.entries(paths).forEach(([key, vehiclePath]) => {
     const startLocation = vehiclePath?.length
       ? getVehicleStartingLocation(vehiclePath, boundsRadius / 4, occupiedStartLocations)
       : null;
     occupiedStartLocations.push(startLocation);
-    lookup[+key] = startLocation;
+    lookup[+key] = {
+      location: startLocation,
+      heading: vehiclePath ? findPathHeadingAtPointOptimized(vehiclePath, startLocation) : null,
+    };
   });
   return lookup;
 };
 
-export const selectVehicleStartLocationsOnRoute = createSelector(
+const getSimulatedVehicleLocationsOnRouteWithHeadings = (
+  routes: ShipmentRoute[],
+  paths: { [routeId: number]: google.maps.LatLng[] },
+  simulationTime: number
+): { [id: number]: { location: MapLatLng; heading: number } } => {
+  const lookup: { [id: number]: { location: MapLatLng; heading: number } } = {};
+  routes.forEach((route) => {
+    if (!route.transitions) {
+      return;
+    }
+
+    const path = paths[route.id];
+    let interpolationDistance = 0;
+    let totalDistance = 0;
+
+    if (durationSeconds(route.vehicleStartTime).greaterThan(simulationTime)) {
+      lookup[route.id] = {
+        location: path[0],
+        heading: computeHeadingAlongPath(path[0], path.length > 1 ? path[1] : path[0]),
+      };
+    } else if (durationSeconds(route.vehicleEndTime).lessThan(simulationTime)) {
+      lookup[route.id] = {
+        location: path[path.length - 1],
+        heading: computeHeadingAlongPath(
+          path[path.length - 1],
+          path.length > 1 ? path[path.length - 2] : path[path.length - 1]
+        ),
+      };
+    } else {
+      route.transitions.forEach((transition) => {
+        const start = durationSeconds(transition.startTime, Long.ZERO);
+        const duration = durationSeconds(transition.travelDuration, Long.ZERO);
+        const end = start.add(duration);
+
+        if (start.lessThanOrEqual(simulationTime)) {
+          const transitionPercent = Math.min(
+            1,
+            Math.max(0, (simulationTime - start.toNumber()) / end.subtract(start).toNumber())
+          );
+          interpolationDistance =
+            totalDistance + transition.travelDistanceMeters * transitionPercent;
+        }
+        totalDistance += transition.travelDistanceMeters;
+      });
+      const point = getPointAlongPathByDistance(path, interpolationDistance);
+      const prevPoint = getPointAlongPathByDistance(
+        path,
+        interpolationDistance > 1 ? interpolationDistance - 1 : 0
+      );
+      lookup[route.id] = { location: point, heading: computeHeadingAlongPath(prevPoint, point) };
+    }
+  });
+  return lookup;
+};
+
+export const selectVehicleStartLocationsOnRouteWithHeadings = createSelector(
   ShipmentRouteSelectors.selectOverviewPolylinePaths,
   selectScenarioBoundsRadius,
-  (paths, boundsRadius) => getVehicleStartLocationsOnRoute(paths, boundsRadius)
+  (paths, boundsRadius) => getVehicleStartLocationsOnRouteWithHeadings(paths, boundsRadius)
 );
 
-export const selectVehicleHeadings = createSelector(
-  selectVehicleStartLocationsOnRoute,
+export const selectSimulatedVehicleLocationsOnRouteWithHeadings = createSelector(
+  fromShipmentRoute.selectAll,
   ShipmentRouteSelectors.selectOverviewPolylinePaths,
-  (vehicleLocations, paths) => {
-    const vehicleHeadings: { [id: number]: number } = {};
-    Object.entries(paths).forEach(([key, path]) => {
-      const id = +key;
-      vehicleHeadings[id] = path
-        ? findPathHeadingAtPointOptimized(path, vehicleLocations[id])
-        : null;
-    });
-    return vehicleHeadings;
-  }
+  TravelSimulatorSelectors.selectTime,
+  (routes, paths, simulationTime) =>
+    getSimulatedVehicleLocationsOnRouteWithHeadings(routes, paths, simulationTime)
+);
+
+export const selectVehicleLocationsOnRouteWithHeadings = createSelector(
+  TravelSimulatorSelectors.selectActive,
+  selectSimulatedVehicleLocationsOnRouteWithHeadings,
+  selectVehicleStartLocationsOnRouteWithHeadings,
+  (useSimulatedLocations, simulatedLocations, locations) =>
+    useSimulatedLocations ? simulatedLocations : locations
 );
 
 export const selectVehicleInitialHeadings = createSelector(
@@ -208,13 +283,13 @@ export const selectPreSolveEditShipmentFormBounds = createSelector(
 
 export const selectInfoWindowVehicle = createSelector(
   fromVehicle.selectClickedVehicle,
-  selectVehicleStartLocationsOnRoute,
+  selectVehicleLocationsOnRouteWithHeadings,
   (vehicle, startLocations) => {
     return (
       vehicle && {
         id: vehicle.id,
-        position: startLocations[vehicle.id]
-          ? startLocations[vehicle.id]
+        position: startLocations[vehicle.id].location
+          ? startLocations[vehicle.id].location
           : fromDispatcherLatLng(vehicle.startWaypoint?.location?.latLng),
       }
     );
@@ -246,5 +321,31 @@ export const selectSelectionFilterActive = createSelector(
     } else if (page === Page.RoutesChart) {
       return routesActive;
     }
+  }
+);
+
+export const selectAllMapLayers = createSelector(selectMapState, fromMap.selectPostSolveMapLayers);
+
+export const selectPostSolveMapLayers = createSelector(
+  selectAllMapLayers,
+  fromVehicle.selectAll,
+  (layers, vehicles) => {
+    const mapLayers: { [id in MapLayerId]?: MapLayer } = {};
+
+    const usedTravelModes = new Set();
+    vehicles.forEach((vehicle) => usedTravelModes.add(vehicle.travelMode ?? TravelMode.DRIVING));
+
+    Object.keys(layers).forEach((layerId) => {
+      const layer = layers[layerId];
+      if (!layer.travelMode) {
+        mapLayers[layerId] = layer;
+        return;
+      }
+      if (usedTravelModes.has(layer.travelMode)) {
+        mapLayers[layerId] = layer;
+      }
+    });
+
+    return mapLayers;
   }
 );

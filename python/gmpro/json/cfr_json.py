@@ -73,10 +73,25 @@ class Load(TypedDict):
   amount: Int64String
 
 
-class LoadLimit(TypedDict):
+class LoadCost(TypedDict, total=False):
+  """Represents the load costs in the JSON GMPRO request.
+
+  Note that load-based costs are supported only in GMPRO.
+  """
+
+  loadThreshold: Int64String
+  costPerUnitBelowThreshold: float
+  costPerUnitAboveThreshold: float
+
+
+class LoadLimit(TypedDict, total=False):
   """Represents the vehicle load limit in the JSON CFR request."""
 
   maxLoad: Int64String
+
+  # costPerKilometer and costPerTraveledHour are supported only by GMPRO.
+  costPerKilometer: LoadCost
+  costPerTraveledHour: LoadCost
 
 
 class Location(TypedDict, total=False):
@@ -525,6 +540,44 @@ def get_visits(route: ShipmentRoute) -> Sequence[Visit]:
 def get_transitions(route: ShipmentRoute) -> Sequence[Transition]:
   """Returns the list of transitions on a route or an empty sequence."""
   return route.get("transitions", ())
+
+
+def get_arrival_waypoint(visit_request: VisitRequest) -> Waypoint | None:
+  """Returns the explicit arrival location or waypoint of a visit request.
+
+  The information is taken from `arrivalLocation` or `arrivalWaypoint`,
+  depending on which one is available. In the former case, returns a new
+  `Waypoint` object that represents the same information.
+
+  Args:
+    visit_request: The visit request.
+
+  Returns:
+    The arrival waypoint. None, if there is neither arrival location nor arrival
+    waypoint is specified explicitly.
+  """
+  if (latlng := visit_request.get("arrivalLocation")) is not None:
+    return {"location": {"latLng": latlng}}
+  return visit_request.get("arrivalWaypoint")
+
+
+def get_departure_waypoint(visit_request: VisitRequest) -> Waypoint | None:
+  """Returns the explicit departure location or waypoint of a visit request.
+
+  The information is taken from `departureLocation` or `departureWaypoint`,
+  depending on which one is available. In the former case, returns a new
+  `Waypoint` object that represents the same information.
+
+  Args:
+    visit_request: The visit request.
+
+  Returns:
+    The departure waypoint. None, if there is departure arrival location nor
+    departure waypoint is specified explicitly.
+  """
+  if (latlng := visit_request.get("departureLocation")) is not None:
+    return {"location": {"latLng": latlng}}
+  return visit_request.get("departureWaypoint")
 
 
 def get_break_earliest_start_time(

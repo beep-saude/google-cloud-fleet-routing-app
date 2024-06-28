@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import { createFeatureSelector, createSelector } from '@ngrx/store';
 import { FilterOption } from 'src/app/shared/models/filter';
@@ -57,6 +64,10 @@ const selectSelectedRoutes = createSelector(
   fromShipmentRoute.selectAll,
   selectSelectedLookup,
   (routes, selected) => routes.filter((route) => selected[route.id])
+);
+
+const selectedSelectedRoutesIds = createSelector(selectSelectedRoutes, (routes) =>
+  routes.map((route) => route.id)
 );
 
 const selectColumns = createSelector(selectRoutesMetadataState, (_state) => routeMetadataColumns);
@@ -118,7 +129,11 @@ const selectRouteMetadata = createSelector(
         .subtract(durationSeconds(route.vehicleStartTime))
         .toNumber();
       return {
-        capacityUtilization: calculateCapacityUtilizations(vehicles[route.id], routeShipments),
+        capacityUtilization: calculateCapacityUtilizations(
+          route,
+          vehicles[route.id],
+          routeShipments
+        ),
         cost: calculateTotalCost(vehicles[route.id], totalKm, traveledTime / 3600),
         endLocation: vehicles[route.id].startWaypoint?.location?.latLng,
         route,
@@ -128,6 +143,7 @@ const selectRouteMetadata = createSelector(
         totalPickups,
         totalShipments: new Set(routeVisits.map((visit) => visit.shipmentIndex)).size,
         traveledTime,
+        traveledDistance: route.metrics?.travelDistanceMeters / 1000,
       };
     })
 );
@@ -141,7 +157,11 @@ const getShipmentsForRoute = (shipments: Shipment[], visits: Visit[]): Shipment[
   return toArray(routeShipments);
 };
 
-const calculateCapacityUtilizations = (vehicle: Vehicle, shipments: Shipment[]): any => {
+const calculateCapacityUtilizations = (
+  route: ShipmentRoute,
+  vehicle: Vehicle,
+  shipments: Shipment[]
+): any => {
   const utilizations = {};
 
   // add shipment load demands
@@ -149,11 +169,12 @@ const calculateCapacityUtilizations = (vehicle: Vehicle, shipments: Shipment[]):
     for (const [loadType, load] of Object.entries(shipment.loadDemands || {})) {
       if (!utilizations[loadType]) {
         utilizations[loadType] = {
-          used: 0,
+          totalUsed: 0,
           capacity: 0,
+          maxUsed: 0,
         };
       }
-      utilizations[loadType].used += Long.fromValue(load.amount).toNumber();
+      utilizations[loadType].totalUsed += Long.fromValue(load.amount).toNumber();
     }
   });
 
@@ -164,11 +185,19 @@ const calculateCapacityUtilizations = (vehicle: Vehicle, shipments: Shipment[]):
     }
   });
 
+  // add max used from route metrics
+  Object.keys(utilizations).forEach((key) => {
+    if (route.metrics?.maxLoads?.[key]) {
+      utilizations[key].maxUsed = route.metrics.maxLoads[key].amount;
+    }
+  });
+
   // add zero used for any load types not missing from utilization
   Object.keys(vehicle.loadLimits || {}).forEach((loadType) => {
     if (!utilizations[loadType]) {
       utilizations[loadType] = {
-        used: 0,
+        maxUsed: 0,
+        totalUsed: 0,
         capacity: Long.fromValue(vehicle.loadLimits[loadType].maxLoad).toNumber(),
       };
     }
@@ -178,7 +207,7 @@ const calculateCapacityUtilizations = (vehicle: Vehicle, shipments: Shipment[]):
 
 const calculateRouteKm = (route: ShipmentRoute): number => {
   let distance = 0;
-  route.travelSteps?.forEach((step) => (distance += step.distanceMeters));
+  route.transitions?.forEach((transition) => (distance += transition.travelDistanceMeters));
   return distance / 1000;
 };
 
@@ -351,6 +380,7 @@ export const RoutesMetadataSelectors = {
   selectActiveSortColumn,
   selectColumns,
   selectSelectedRoutes,
+  selectedSelectedRoutesIds,
   selectSelectedLookup,
   selectSelected,
   selectSort,

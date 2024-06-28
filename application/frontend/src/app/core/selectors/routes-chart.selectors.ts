@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import { createFeatureSelector, createSelector } from '@ngrx/store';
 import * as Long from 'long';
@@ -136,13 +143,13 @@ const selectFilteredRouteIds = createSelector(
   (routes, filtersActive) => (filtersActive ? new Set<number>(routes.map((r) => r.id)) : null)
 );
 
-const selectFilteredRoutesWithVisitsLookup = createSelector(
+const selectFilteredRoutesWithTransitionsLookup = createSelector(
   selectFilteredRoutes,
-  (routes) => new Set(routes.filter((r) => r.visits.length > 0).map((r) => r.id))
+  (routes) => new Set(routes.filter((r) => r.transitions?.length > 0).map((r) => r.id))
 );
 
-const selectFilteredRoutesSelectedWithVisitsLookup = createSelector(
-  selectFilteredRoutesWithVisitsLookup,
+const selectFilteredRoutesSelectedWithTransitionsLookup = createSelector(
+  selectFilteredRoutesWithTransitionsLookup,
   selectSelectedRoutesLookup,
   (lookup, selected) => new Set(Array.from(lookup.values()).filter((id) => selected[id]))
 );
@@ -176,6 +183,15 @@ const selectFilteredRoutesSelected = createSelector(
   selectFilteredRoutes,
   selectSelectedRoutesLookup,
   (routes, selected) => routes.filter((route) => selected[route.id])
+);
+
+const selectFilteredRoutesSelectedLookup = createSelector(
+  selectFilteredRoutesSelected,
+  (selected) => {
+    const filteredSelected = {} as { [id: number]: boolean };
+    selected.forEach((route) => (filteredSelected[route.id] = true));
+    return filteredSelected;
+  }
 );
 
 const selectTotalFilteredRoutes = createSelector(selectFilteredRoutes, (routes) => routes.length);
@@ -319,6 +335,36 @@ const selectDuration = createSelector(selectRange, selectRangeOffset, (range, of
   return [start, start.add(range)] as [Long, Long];
 });
 
+const selectViewHasChanged = createSelector(
+  selectFilters,
+  selectPageIndex,
+  selectPageSize,
+  selectAddedRange,
+  selectRangeIndex,
+  selectRangeOffset,
+  selectDefaultRangeOffset,
+  selectRoutes,
+  selectSelectedRoutes,
+  (
+    filters,
+    pageIndex,
+    pageSize,
+    addedRange,
+    rangeIndex,
+    rangeOffset,
+    defaultRangeOffset,
+    routes,
+    selectedRoutes
+  ) =>
+    filters.length > 0 ||
+    pageIndex !== 0 ||
+    pageSize !== 50 ||
+    addedRange !== 0 ||
+    rangeIndex !== chartConfig.day.defaultRangeIndex ||
+    rangeOffset !== defaultRangeOffset ||
+    routes.length !== selectedRoutes.length
+);
+
 export const RoutesChartSelectors = {
   selectView,
   selectRangeIndex,
@@ -341,11 +387,12 @@ export const RoutesChartSelectors = {
   selectFilteredRoutes,
   selectHasActiveFilters,
   selectFilteredRouteIds,
-  selectFilteredRoutesWithVisitsLookup,
-  selectFilteredRoutesSelectedWithVisitsLookup,
+  selectFilteredRoutesWithTransitionsLookup,
+  selectFilteredRoutesSelectedWithTransitionsLookup,
   selectFilteredRoutesVisitRequestIds,
   selectPagedRoutes,
   selectFilteredRoutesSelected,
+  selectFilteredRoutesSelectedLookup,
   selectTotalFilteredRoutes,
   selectTotalFilteredRoutesSelected,
   selectRanges,
@@ -361,6 +408,7 @@ export const RoutesChartSelectors = {
   selectNextColumnOffset,
   selectNextRangeOffset,
   selectDuration,
+  selectViewHasChanged,
 };
 
 export default RoutesChartSelectors;
