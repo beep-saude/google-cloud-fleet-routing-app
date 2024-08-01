@@ -20,6 +20,10 @@ import { TravelSimulatorComponent } from './travel-simulator.component';
 import { provideMockStore } from '@ngrx/store/testing';
 import ShipmentModelSelectors from '../../selectors/shipment-model.selectors';
 import TravelSimulatorSelectors from '../../selectors/travel-simulator.selectors';
+import { MaterialModule } from 'src/app/material';
+import { NoopAnimationsModule } from '@angular/platform-browser/animations';
+import { MapService } from '../../services';
+import { MockMapService } from 'src/test/service-mocks';
 
 describe('TravelSimulatorComponent', () => {
   let component: TravelSimulatorComponent;
@@ -27,8 +31,10 @@ describe('TravelSimulatorComponent', () => {
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
+      imports: [MaterialModule, NoopAnimationsModule],
       declarations: [TravelSimulatorComponent],
       providers: [
+        { provide: MapService, useValue: MockMapService },
         provideMockStore({
           selectors: [
             { selector: ShipmentModelSelectors.selectGlobalStartTime, value: 0 },

@@ -102,6 +102,9 @@ const selectSelectedRoutesColors = createSelector(
   }
 );
 
+const selectRouteColor = (id: number) =>
+  createSelector(selectSelectedRoutesColors, (colors) => colors[id]);
+
 const selectSelectedRoutesVisitIds = createSelector(
   selectSelectedRoutes,
   ShipmentRouteSelectors.selectRoutesVisitIdsFn,
@@ -365,6 +368,11 @@ const selectViewHasChanged = createSelector(
     routes.length !== selectedRoutes.length
 );
 
+const selectHoveredVisitIds = createSelector(
+  selectRoutesChartState,
+  fromRoutesChart.selectHoveredVisitIds
+);
+
 export const RoutesChartSelectors = {
   selectView,
   selectRangeIndex,
@@ -382,6 +390,7 @@ export const RoutesChartSelectors = {
   selectSelectedRoutesLookup,
   selectSelectedRoutesColorIndexes,
   selectSelectedRoutesColors,
+  selectRouteColor,
   selectSelectedRoutesVisitIds,
   selectSelectedRoute,
   selectFilteredRoutes,
@@ -409,6 +418,7 @@ export const RoutesChartSelectors = {
   selectNextRangeOffset,
   selectDuration,
   selectViewHasChanged,
+  selectHoveredVisitIds,
 };
 
 export default RoutesChartSelectors;

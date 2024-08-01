@@ -14,7 +14,10 @@
   [changedVisits]="changedVisits$ | async"
   [relaxationTimes]="relaxationTimes$ | async"
   [range]="range$ | async"
-  (pointOfInterestClick)="onPointOfInterestClick($event)"
+  [color]="color$ | async"
   (editVehicle)="onEditVehicle($event)"
-  (viewMetadata)="onViewMetadata($event)">
+  (viewMetadata)="onViewMetadata($event)"
+  (clickVisitIds)="onClickVisitIds($event)"
+  (mouseEnterVisits)="onMouseEnterVisitIds($event)"
+  (mouseExitVisits)="onMouseExitVisits()">
 </app-base-routes-row>

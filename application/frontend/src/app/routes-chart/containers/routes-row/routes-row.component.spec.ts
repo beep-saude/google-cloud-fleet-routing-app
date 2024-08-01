@@ -23,12 +23,10 @@ import * as Long from 'long';
 import {
   PointOfInterest,
   PointOfInterestClick,
-  PointOfInterestStartDrag,
   ShipmentRoute,
   Timeline,
   ChangedVisits,
   Vehicle,
-  PointOfInterestTimelineOverlapBegin,
 } from 'src/app/core/models';
 import * as fromConfig from 'src/app/core/selectors/config.selectors';
 import * as fromPointOfInterest from 'src/app/core/selectors/point-of-interest.selectors';
@@ -39,23 +37,20 @@ import * as fromTimeline from 'src/app/core/selectors/timeline.selectors';
 import * as fromVehicle from 'src/app/core/selectors/vehicle.selectors';
 import VisitSelectors from 'src/app/core/selectors/visit.selectors';
 import { SharedModule } from 'src/app/shared/shared.module';
-import { ValidationService } from '../../../core/services';
+import { MapService, ValidationService } from '../../../core/services';
 import { RoutesRowComponent } from './routes-row.component';
 import * as fromDispatcher from 'src/app/core/selectors/dispatcher.selectors';
 import ShipmentModelSelectors from '../../../core/selectors/shipment-model.selectors';
+import { MockMapService } from 'src/test/service-mocks';
 
 @Component({
   selector: 'app-base-routes-row',
   template: '',
 })
 class MockBaseRoutesRowComponent {
-  @Input() currentDragVisitIds: number[];
-  @Input() currentOverlapId: number;
-  @Input() isDragging: boolean;
   @Input() route: ShipmentRoute;
   @Input() vehicle: Vehicle;
   @Input() shipmentCount: number;
-  @Input() selected = false;
   @Input() timeline: Timeline;
   @Input() duration: [Long, Long];
   @Input() availability: [Long, Long];
@@ -66,15 +61,13 @@ class MockBaseRoutesRowComponent {
   @Input() relaxationTimes: Long[];
   @Input() timezoneOffset: number;
   @Input() changedVisits: ChangedVisits;
+  @Input() color = '#1a73e8';
   @Output() selectedChange = new EventEmitter<boolean>();
-  @Output() dragStart = new EventEmitter<PointOfInterestStartDrag>();
-  @Output() timelineEnter = new EventEmitter<PointOfInterestTimelineOverlapBegin>();
-  @Output() timelineLeave = new EventEmitter<number>();
-  @Output() pointOfInterestClick = new EventEmitter<PointOfInterestClick>();
   @Output() editVehicle = new EventEmitter<number>();
   @Output() viewMetadata = new EventEmitter<number>();
-  @Output() mouseEnterVisit = new EventEmitter<number>();
-  @Output() mouseExitVisit = new EventEmitter();
+  @Output() clickVisitIds = new EventEmitter<number[]>();
+  @Output() mouseEnterVisits = new EventEmitter<number[]>();
+  @Output() mouseExitVisits = new EventEmitter();
 }
 
 describe('RoutesRowComponent', () => {
@@ -87,6 +80,7 @@ describe('RoutesRowComponent', () => {
       imports: [RouterTestingModule, SharedModule],
       declarations: [MockBaseRoutesRowComponent, RoutesRowComponent],
       providers: [
+        { provide: MapService, useClass: MockMapService },
         {
           provide: ValidationService,
           useValue: jasmine.createSpyObj('validationService', ['getErrorEntityIds']),
@@ -145,6 +139,13 @@ describe('RoutesRowComponent', () => {
       createSelector(
         () => null,
         (_state) => ({})
+      )
+    );
+
+    spyOn(VisitSelectors, 'selectVisitRequestsByIds').and.returnValue(
+      createSelector(
+        () => null,
+        (_state) => []
       )
     );
 

@@ -254,7 +254,10 @@ class Planner:
         "label": self._request.get("label", "") + "/local",
         "model": local_model,
     }
-    self._add_options_from_original_request(request)
+    _shared.copy_shared_options(from_request=self._request, to_request=request)
+    internal_parameters = self._options.local_internal_parameters
+    if internal_parameters is not None:
+      request["internalParameters"] = internal_parameters
     return request
 
   def make_global_request(
@@ -340,19 +343,18 @@ class Planner:
         "label": self._request.get("label", "") + "/global",
         "model": global_model,
     }
-    self._add_options_from_original_request(request)
+    _shared.copy_shared_options(from_request=self._request, to_request=request)
     if consider_road_traffic_override is not None:
       request["considerRoadTraffic"] = consider_road_traffic_override
     else:
       consider_road_traffic = self._request.get("considerRoadTraffic")
       if consider_road_traffic is not None:
         request["considerRoadTraffic"] = consider_road_traffic
-    # TODO(ondrasej): Consider applying internal parameters also to the local
-    # request; potentially, add separate internal parameters for the local and
-    # the global models to the configuration of the planner.
-    internal_parameters = self._request.get("internalParameters")
-    if internal_parameters is not None:
-      request["internalParameters"] = internal_parameters
+    _shared.override_internal_parameters(
+        request,
+        self._request.get("internalParameters"),
+        self._options.global_internal_parameters,
+    )
     return request
 
   def make_local_refinement_request(
@@ -549,7 +551,12 @@ class Planner:
         "model": refinement_model,
         "injectedFirstSolutionRoutes": refinement_injected_routes,
     }
-    self._add_options_from_original_request(request)
+    _shared.copy_shared_options(from_request=self._request, to_request=request)
+    _shared.override_internal_parameters(
+        request,
+        self._options.local_internal_parameters,
+        self._options.local_refinement_internal_parameters,
+    )
     return request
 
   def integrate_local_refinement(
@@ -686,41 +693,6 @@ class Planner:
     return merge_local_and_global.merge_local_and_global_result(
         local_response, global_response, check_consistency
     )
-
-  def _add_options_from_original_request(
-      self, request: cfr_json.OptimizeToursRequest
-  ) -> None:
-    """Copies solver options from `self._request` to `request`."""
-    # Copy solve mode.
-    # TODO(ondrasej): Consider always setting searchMode to
-    # CONSUME_ALL_AVAILABLE_TIME for the local model. The timeout for the local
-    # model is usually very short, and the difference between the two might not
-    # be that large.
-    search_mode = self._request.get("searchMode")
-    if search_mode is not None:
-      request["searchMode"] = search_mode
-
-    allow_large_deadlines = self._request.get(
-        "allowLargeDeadlineDespiteInterruptionRisk"
-    )
-    if allow_large_deadlines is not None:
-      request["allowLargeDeadlineDespiteInterruptionRisk"] = (
-          allow_large_deadlines
-      )
-
-    # Copy polyline settings.
-    populate_polylines = self._request.get("populatePolylines")
-    if populate_polylines is not None:
-      request["populatePolylines"] = populate_polylines
-    populate_transition_polylines = (
-        self._request.get("populateTransitionPolylines") or populate_polylines
-    )
-    if populate_transition_polylines is not None:
-      request["populateTransitionPolylines"] = populate_transition_polylines
-
-    # Copy additional metadata.
-    if (parent := self._request.get("parent")) is not None:
-      request["parent"] = parent
 
 
 def _make_local_model_barrier_shipment(
@@ -996,6 +968,12 @@ class _RefinedRouteIntegration:
         self._integrated_global_request["considerRoadTraffic"] = (
             consider_road_traffic
         )
+      _shared.override_internal_parameters(
+          self._integrated_global_request,
+          self._request.get("internalParameters"),
+          self._options.global_internal_parameters,
+          self._options.global_refinement_internal_parameters,
+      )
 
       _global_model.assert_routes_handle_same_shipments(
           self._global_response, {"routes": self._integrated_global_routes}

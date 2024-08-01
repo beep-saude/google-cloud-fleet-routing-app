@@ -22,10 +22,10 @@ import * as fromVisit from './visit.selectors';
 import PreSolveShipmentSelectors from './pre-solve-shipment.selectors';
 import { fromDispatcherToTurfPoint } from 'src/app/util';
 import { Feature, Point } from '@turf/helpers';
-import { selectMouseOverId } from './ui.selectors';
 import RoutesMetadataSelectors from './routes-metadata.selectors';
 import * as fromUI from './ui.selectors';
 import ShipmentRouteSelectors from './shipment-route.selectors';
+import { selectVisitRequestStopOrder } from './shipment-route.selectors';
 
 export const selectVisitRequests = createSelector(
   fromVisitRequest.selectAll,
@@ -119,6 +119,56 @@ export const selectFilteredVisitRequests = createSelector(
   }
 );
 
+export const selectFilteredVisitRequestsWithStopOrderAndSelectionStatus = createSelector(
+  selectFilteredVisitRequests,
+  selectFilteredRouteVisitRequestsSelected,
+  selectVisitRequestStopOrder,
+  fromVisit.selectEntities,
+  RoutesChartSelectors.selectSelectedRoutesColors,
+  (visitRequests, selectedVisitRequests, stopOrder, visits, colors) => {
+    const visitRequestsWithOrder = [];
+    visitRequests.forEach((vr) => {
+      const made = !!visits[vr.id];
+      visitRequestsWithOrder.push({
+        ...vr,
+        color: made ? colors[visits[vr.id].shipmentRouteId] : null,
+        stopOrder: stopOrder[vr.id],
+        selected: selectedVisitRequests.some((svr) => svr.id === vr.id),
+      });
+    });
+    return visitRequestsWithOrder;
+  }
+);
+
+export const selectFilteredVisitRequestsWithStopOrder = createSelector(
+  selectFilteredVisitRequests,
+  selectVisitRequestStopOrder,
+  (visitRequests, stopOrder) => {
+    const visitRequestsWithOrder = [];
+    visitRequests.forEach((vr) =>
+      visitRequestsWithOrder.push({ ...vr, stopOrder: stopOrder[vr.id] })
+    );
+    return visitRequestsWithOrder;
+  }
+);
+
+export const selectFilteredVisitRequestsSelectedWithStopOrder = createSelector(
+  selectFilteredRouteVisitRequestsSelected,
+  selectVisitRequestStopOrder,
+  fromVisit.selectEntities,
+  RoutesChartSelectors.selectSelectedRoutesColors,
+  (visitRequests, stopOrder, visits, colors) => {
+    return visitRequests.map((visitRequest) => {
+      const made = !!visits[visitRequest.id];
+      return {
+        ...visitRequestToDeckGL(visitRequest, made),
+        color: made ? colors[visits[visitRequest.id].shipmentRouteId] : null,
+        stopOrder: stopOrder[visitRequest.id],
+      };
+    });
+  }
+);
+
 export const selectFilteredVisitRequestsSelected = createSelector(
   selectFilteredRouteVisitRequestsSelected,
   fromVisit.selectEntities,
@@ -166,15 +216,15 @@ export const selectFilteredVisitRequestsTurfPoints = createSelector(
   }
 );
 
-export const selectMouseOverVisitRequest = createSelector(
-  selectFilteredRouteVisitRequests,
+export const selectMouseOverVisitRequests = createSelector(
+  selectFilteredVisitRequestsWithStopOrder,
   RoutesChartSelectors.selectSelectedRoutesVisitIds,
   fromVisit.selectEntities,
   RoutesChartSelectors.selectSelectedRoutesColors,
-  selectMouseOverId,
-  (filtered, selected, visits, colors, mouseOverId) => {
+  RoutesChartSelectors.selectHoveredVisitIds,
+  (filtered, selected, visits, colors, visitIds) => {
     return filtered
-      .filter((visitRequest) => visitRequest.id === mouseOverId)
+      .filter((visitRequest) => visitIds.includes(visitRequest.id))
       .map((visitRequest) => {
         const made = !!visits[visitRequest.id];
         return {

@@ -56,6 +56,11 @@ export const removeFilter = createAction(
   props<{ filter: ActiveFilter }>()
 );
 
+export const setFilters = createAction(
+  '[RoutesChart] Set Filters',
+  props<{ filters: ActiveFilter[] }>()
+);
+
 export const selectRange = createAction(
   '[RoutesChart] Select Range',
   props<{ rangeIndex: number }>()
@@ -89,6 +94,13 @@ export const mouseEnterVisitRequest = createAction(
 );
 
 export const mouseExitVisitRequest = createAction('[RoutesChart] Mouse Exit Visit Request');
+
+export const mouseEnterVisits = createAction(
+  '[RoutesChart] Mouse Enter Visits',
+  props<{ ids: number[] }>()
+);
+
+export const mouseExitVisits = createAction('[RoutesChart] Mouse Exit Visits');
 
 export const resetView = createAction('[RoutesChart] Reset View');
 

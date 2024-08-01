@@ -21,6 +21,30 @@ from . import cfr_json
 from ..testdata import testdata
 
 
+class TestDistanceMeters(unittest.TestCase):
+  """Tests for distance_meters."""
+
+  def test_same_latlng(self):
+    latlng = {"latitude": 48.87761081683395, "longitude": 2.329784699711765}
+    self.assertAlmostEqual(cfr_json.distance_meters(latlng, latlng), 0)
+
+  def test_short_distance(self):
+    # Distance between the different sides of road in front of Google Paris.
+    point_a = {"latitude": 48.87707058663172, "longitude": 2.329558723609291}
+    point_b = {"latitude": 48.87699076436832, "longitude": 2.329454117460964}
+    distance_meters = cfr_json.distance_meters(point_a, point_b)
+    self.assertLess(distance_meters, 12)
+    self.assertGreater(distance_meters, 10)
+
+  def test_long_distance(self):
+    # Distance between Google Paris and Google Mountain View.
+    point_a = {"latitude": 37.423711217709354, "longitude": -122.09213923498993}
+    point_b = {"latitude": 48.8769006356297, "longitude": 2.3298813307386492}
+    distance_meters = cfr_json.distance_meters(point_a, point_b)
+    self.assertLess(distance_meters, 8980000)
+    self.assertGreater(distance_meters, 8950000)
+
+
 class MakeShipmentTest(unittest.TestCase):
   """Tests for make_shipment."""
 
@@ -692,6 +716,85 @@ class GetDepartureWaypointTest(unittest.TestCase):
         "arrivalLocation": {"latitude": 38.5, "longitude": -120.2}
     }
     self.assertIsNone(cfr_json.get_departure_waypoint(visit_request))
+
+
+class HasDifferentArrivalAndDepartureWaypointsTest(unittest.TestCase):
+  """Tests for has_different_arrival_and_departure_waypoints."""
+
+  def test_departure_location_only(self):
+    visit_request: cfr_json.VisitRequest = {
+        "departureLocation": {"latitude": 1.0, "longitude": 2.0}
+    }
+    self.assertFalse(
+        cfr_json.has_different_arrival_and_departure_waypoints(visit_request)
+    )
+
+  def test_departure_waypoint_only(self):
+    visit_request: cfr_json.VisitRequest = {
+        "departureWaypoint": {"placeId": "This is a place"}
+    }
+    self.assertFalse(
+        cfr_json.has_different_arrival_and_departure_waypoints(visit_request)
+    )
+
+  def test_arrival_location_only(self):
+    visit_request: cfr_json.VisitRequest = {
+        "arrivalLocation": {"latitude": 1.0, "longitude": 2.0}
+    }
+    self.assertFalse(
+        cfr_json.has_different_arrival_and_departure_waypoints(visit_request)
+    )
+
+  def test_arrival_waypoint_only(self):
+    visit_request: cfr_json.VisitRequest = {
+        "arrivalWaypoint": {"placeId": "This is a place"}
+    }
+    self.assertFalse(
+        cfr_json.has_different_arrival_and_departure_waypoints(visit_request)
+    )
+
+  def test_arrival_location(self):
+    visit_request: cfr_json.VisitRequest = {
+        "arrivalLocation": {"latitude": 1.0, "longitude": 2.0},
+        "departureLocation": {"latitude": 1.0, "longitude": 2.0},
+    }
+    self.assertFalse(
+        cfr_json.has_different_arrival_and_departure_waypoints(visit_request)
+    )
+
+  def test_same_location_and_waypoint(self):
+    visit_request: cfr_json.VisitRequest = {
+        "arrivalLocation": {"latitude": 1.0, "longitude": 2.0},
+        "departureWaypoint": {
+            "location": {"latLng": {"latitude": 1.0, "longitude": 2.0}}
+        },
+    }
+    self.assertFalse(
+        cfr_json.has_different_arrival_and_departure_waypoints(visit_request)
+    )
+
+  def test_different_locations(self):
+    visit_request: cfr_json.VisitRequest = {
+        "arrivalLocation": {"latitude": 1.0, "longitude": 2.0},
+        "departureLocation": {"latitude": 1.0, "longitude": 3.0},
+    }
+    self.assertTrue(
+        cfr_json.has_different_arrival_and_departure_waypoints(visit_request)
+    )
+
+  def test_different_location_and_waypoint(self):
+    visit_request: cfr_json.VisitRequest = {
+        "arrivalWaypoint": {
+            "location": {
+                "latLng": {"latitude": 1.0, "longitude": 2.0},
+                "heading": 90,
+            },
+        },
+        "departureLocation": {"latitude": 1.0, "longitude": 2.0},
+    }
+    self.assertTrue(
+        cfr_json.has_different_arrival_and_departure_waypoints(visit_request)
+    )
 
 
 class GetBreakPropertiesTest(unittest.TestCase):
@@ -2477,6 +2580,211 @@ class MergePolylinesFromTransitionsTest(unittest.TestCase):
     self.assertEqual(
         cfr_json.merge_polylines_from_transitions(transitions),
         {"points": cfr_json.encode_polyline(points)},
+    )
+
+
+class GetAdjacentPolylineTest(unittest.TestCase):
+  """Tests for get_adjacent_polyline."""
+
+  _MODEL: cfr_json.ShipmentModel = {
+      "shipments": [
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "A"}}]},
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "B"}}]},
+          {"deliveries": [{"departureWaypoint": {"placeId": "B"}}]},
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "C"}}]},
+          {"deliveries": [{"departureWaypoint": {"placeId": "C"}}]},
+          # 5
+          {
+              "deliveries": [{
+                  "arrivalWaypoint": {"placeId": "C"},
+                  "departureWaypoint": {"placeId": "C"},
+              }]
+          },
+          {
+              "deliveries": [{
+                  "arrivalWaypoint": {"placeId": "D"},
+                  "departureWaypoint": {"placeId": "E"},
+              }]
+          },
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "D"}}]},
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "E"}}]},
+      ]
+  }
+
+  def test_no_polylines(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [{"shipmentIndex": 1}, {"shipmentIndex": 2}],
+        "transitions": [{}, {}, {}],
+    }
+
+    for inbound in (True, False):
+      for visit_index in range(2):
+        with self.subTest(inbound=inbound, visit_index=visit_index):
+          self.assertEqual(
+              cfr_json.get_adjacent_encoded_polyline(
+                  self._MODEL, route, visit_index, inbound
+              ),
+              (0 if inbound else 1, None),
+          )
+
+  def test_some_polylines(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [{"shipmentIndex": 0}, {"shipmentIndex": 1}],
+        "transitions": [
+            {"routePolyline": {"points": "sgiiHcafMkDlPCh@"}},
+            {"routePolyline": {"points": "cmiiHkneMsGK"}},
+            {"routePolyline": {"points": "wuiiHwneMeBCCuLdCqArD{AtHcD}@jE"}},
+        ],
+    }
+    test_cases = [
+        (0, True, (0, "sgiiHcafMkDlPCh@")),
+        (0, False, (0, "cmiiHkneMsGK")),
+        (1, True, (1, "cmiiHkneMsGK")),
+        (1, False, (1, "wuiiHwneMeBCCuLdCqArD{AtHcD}@jE")),
+    ]
+    for visit_index, inbound, expected_polyline in test_cases:
+      with self.subTest(visit_index=visit_index, inbound=inbound):
+        self.assertEqual(
+            cfr_json.get_adjacent_encoded_polyline(
+                self._MODEL, route, visit_index, inbound
+            ),
+            expected_polyline,
+        )
+
+  def test_same_place(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [{"shipmentIndex": 1}, {"shipmentIndex": 2}],
+        "transitions": [
+            {"routePolyline": {"points": "uuiiHyneMeB@CmL"}},
+            {},
+            {"routePolyline": {"points": "_yiiHe|eMjCoAx@bO_BA"}},
+        ],
+    }
+    test_cases = [
+        (True, (0, "uuiiHyneMeB@CmL")),
+        (False, (1, "_yiiHe|eMjCoAx@bO_BA")),
+    ]
+    for visit_index in range(2):
+      for inbound, expected_polyline in test_cases:
+        with self.subTest(visit_index=visit_index, inbound=inbound):
+          self.assertEqual(
+              cfr_json.get_adjacent_encoded_polyline(
+                  self._MODEL, route, visit_index, inbound
+              ),
+              expected_polyline,
+          )
+
+  def test_same_place_but_more_complicated(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [
+            {"shipmentIndex": 3},
+            {"shipmentIndex": 4},
+            {"shipmentIndex": 5},
+        ],
+        "transitions": [
+            {"routePolyline": {"points": "uuiiHyneMeB@CmL"}},
+            {},
+            {},
+            {"routePolyline": {"points": "_yiiHe|eMjCoAx@bO_BA"}},
+        ],
+    }
+    test_cases = [
+        (True, (0, "uuiiHyneMeB@CmL")),
+        (False, (2, "_yiiHe|eMjCoAx@bO_BA")),
+    ]
+    for visit_index in range(3):
+      for inbound, expected_polyline in test_cases:
+        with self.subTest(visit_index=visit_index, inbound=inbound):
+          self.assertEqual(
+              cfr_json.get_adjacent_encoded_polyline(
+                  self._MODEL, route, visit_index, inbound
+              ),
+              expected_polyline,
+          )
+
+  def test_allow_single_point_enabled(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [{"shipmentIndex": 1}, {"shipmentIndex": 2}],
+        "transitions": [
+            {"routePolyline": {"points": "uuiiHyneMeB@CmL"}},
+            {"routePolyline": {"points": "_yiiHe|eM"}},
+            {"routePolyline": {"points": "_yiiHe|eMjCoAx@bO_BA"}},
+        ],
+    }
+    test_cases = [(0, False), (1, True)]
+    expected_polyline = "_yiiHe|eM"
+    for visit_index, inbound in test_cases:
+      with self.subTest(visit_index=visit_index, inbound=inbound):
+        self.assertEqual(
+            cfr_json.get_adjacent_encoded_polyline(
+                self._MODEL, route, visit_index, inbound
+            ),
+            (visit_index, expected_polyline),
+        )
+
+  def test_allow_single_point_disabled(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [{"shipmentIndex": 1}, {"shipmentIndex": 2}],
+        "transitions": [
+            {"routePolyline": {"points": "uuiiHyneMeB@CmL"}},
+            {"routePolyline": {"points": "_yiiHe|eM"}},
+            {"routePolyline": {"points": "_yiiHe|eMjCoAx@bO_BA"}},
+        ],
+    }
+    test_cases = [
+        (0, False, (1, "_yiiHe|eMjCoAx@bO_BA")),
+        (1, True, (0, "uuiiHyneMeB@CmL")),
+    ]
+    for visit_index, inbound, expected_polyline in test_cases:
+      with self.subTest(visit_index=visit_index, inbound=inbound):
+        self.assertEqual(
+            cfr_json.get_adjacent_encoded_polyline(
+                self._MODEL,
+                route,
+                visit_index,
+                inbound,
+                allow_single_point=False,
+            ),
+            expected_polyline,
+        )
+
+  def test_different_arrival_and_departure(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [
+            {"shipmentIndex": 7},
+            {"shipmentIndex": 6},
+            {"shipmentIndex": 8},
+        ],
+        "transitions": [
+            {"routePolyline": {"points": "uuiiHwneMiB@ByLpAm@"}},
+            {},
+            {},
+            {"routePolyline": {"points": "iviiH}}eMp@c@v@dOyAF"}},
+        ],
+    }
+    self.assertEqual(
+        cfr_json.get_adjacent_encoded_polyline(
+            self._MODEL, route, 0, inbound=False, allow_single_point=False
+        ),
+        (1, None),
+    )
+    self.assertEqual(
+        cfr_json.get_adjacent_encoded_polyline(
+            self._MODEL, route, 2, inbound=True, allow_single_point=False
+        ),
+        (1, None),
+    )
+    self.assertEqual(
+        cfr_json.get_adjacent_encoded_polyline(
+            self._MODEL, route, 1, inbound=True
+        ),
+        (0, "uuiiHwneMiB@ByLpAm@"),
+    )
+    self.assertEqual(
+        cfr_json.get_adjacent_encoded_polyline(
+            self._MODEL, route, 1, inbound=False
+        ),
+        (2, "iviiH}}eMp@c@v@dOyAF"),
     )
 
 

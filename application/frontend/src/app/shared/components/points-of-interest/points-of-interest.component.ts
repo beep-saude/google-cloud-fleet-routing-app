@@ -28,12 +28,7 @@ import {
   ViewChild,
 } from '@angular/core';
 import * as Long from 'long';
-import {
-  PointOfInterest,
-  PointOfInterestCategory,
-  PointOfInterestClick,
-  ChangedVisits,
-} from 'src/app/core/models';
+import { PointOfInterest, PointOfInterestCategory, ChangedVisits } from 'src/app/core/models';
 import { defaultTimeFormat, formatSecondsDate, timeToPixel } from 'src/app/util';
 import { Cluster, PointsOfInterestImageAttribute, pointsOfInterestImages } from '../../models';
 
@@ -67,7 +62,10 @@ export class PointsOfInterestComponent implements OnChanges {
   @Input() timezoneOffset: number;
   @Input() routeId: number;
   @Input() changedVisits: ChangedVisits;
-  @Output() pointOfInterestClick = new EventEmitter<PointOfInterestClick>();
+  @Input() color: string;
+  @Output() clickVisitIds = new EventEmitter<number[]>();
+  @Output() mouseEnterVisits = new EventEmitter<number[]>();
+  @Output() mouseExitVisits = new EventEmitter();
 
   get imageAttributeLookup(): { [key: string]: PointsOfInterestImageAttribute } {
     return PointsOfInterestComponent.imageAttributeLookup;
@@ -114,16 +112,41 @@ export class PointsOfInterestComponent implements OnChanges {
     }
   }
 
+  onMouseOver(point: PoiPoint): void {
+    const visitIds = [point[0]];
+    const cluster = this.clusters.find(
+      (cluster) => cluster.start <= point[2] && cluster.end >= point[2]
+    );
+    if (cluster) {
+      this.points.forEach((p) => {
+        if (cluster.start <= p[2] && cluster.end >= p[2]) {
+          visitIds.push(p[0]);
+        }
+      });
+    }
+
+    this.mouseEnterVisits.emit(visitIds);
+  }
+
   onMouseDown(event: MouseEvent, point: PoiPoint): void {
     if (event.button !== 0) {
       // Not the primary button
       return;
     }
-    this.pointOfInterestClick.emit({
-      category: point[1],
-      visitId: point[0],
-      relativeTo: event.target as Element,
-    });
+
+    const visitIds = [point[0]];
+    const cluster = this.clusters.find(
+      (cluster) => cluster.start <= point[2] && cluster.end >= point[2]
+    );
+    if (cluster) {
+      this.points.forEach((p) => {
+        if (cluster.start <= p[2] && cluster.end >= p[2]) {
+          visitIds.push(p[0]);
+        }
+      });
+    }
+
+    this.clickVisitIds.emit(visitIds);
     event.preventDefault();
     event.stopPropagation();
   }

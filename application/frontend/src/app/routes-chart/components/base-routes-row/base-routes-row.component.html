@@ -52,7 +52,8 @@
     [availability]="availability"
     [timeline]="timeline"
     [offset]="7"
-    [timezoneOffset]="timezoneOffset">
+    [timezoneOffset]="timezoneOffset"
+    [color]="color">
   </app-timeline>
   <app-points-of-interest
     [routeId]="route?.id"
@@ -64,6 +65,9 @@
     [timezoneOffset]="timezoneOffset"
     [pendingNewPois]="pendingNewPois"
     [pendingOldVisitIds]="pendingOldVisitIds"
-    (pointOfInterestClick)="pointOfInterestClick.emit($event)">
+    [color]="color"
+    (clickVisitIds)="clickVisitIds.emit($event)"
+    (mouseEnterVisits)="mouseEnterVisits.emit($event)"
+    (mouseExitVisits)="mouseExitVisits.emit()">
   </app-points-of-interest>
 </div>
