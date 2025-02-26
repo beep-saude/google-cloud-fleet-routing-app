@@ -21,10 +21,9 @@ export const router = express.Router();
 
 import { generateFileName, shortName, storage } from "../services/storage";
 import { log } from "../logging";
-import { GetFilesOptions } from "@google-cloud/storage";
 
 router.get("/healthz", async (req: Request, res: Response) => {
-  log.logger.debug("Health check (API)");
+  log.debug("Health check (API)");
   res.status(200).send("OK");
 });
 
@@ -45,7 +44,7 @@ router.get("/status/:date?/:name", async (req: Request, res: Response) => {
     req.params.name,
     req.params.date
   );
-  log.logger.debug(fileName);
+  log.debug(fileName);
 
   const status = (await storage.bucket.file(fileName).exists())[0];
   const result = {
@@ -62,14 +61,14 @@ router.get("/status/:date?/:name", async (req: Request, res: Response) => {
 router.get("/scenarios", async (req: Request, res: Response) => {
   const queryObject = url.parse(req.url, true).query;
 
-  const options: GetFilesOptions = {};
+  const options: { [k: string]: any } = {};
 
   if ("limit" in queryObject) {
     options.maxResults = parseInt(queryObject.limit as string);
     options.autoPaginate = false;
   }
   if ("pageToken" in queryObject) {
-    options.pageToken = queryObject.pageToken as string;
+    options.pageToken = queryObject.pageToken;
   }
 
   if ("startsWith" in queryObject) {
@@ -88,14 +87,14 @@ router.get("/scenarios", async (req: Request, res: Response) => {
 router.get("/solutions", async (req: Request, res: Response) => {
   const queryObject = url.parse(req.url, true).query;
 
-  const options: GetFilesOptions = {};
+  const options: { [k: string]: any } = {};
 
   if ("limit" in queryObject || "pageToken" in queryObject) {
     options.maxResults = parseInt(queryObject.limit as string);
     options.autoPaginate = true;
 
     if ("pageToken" in queryObject) {
-      options.pageToken = queryObject.pageToken as string;
+      options.pageToken = queryObject.pageToken;
     }
   }
 
@@ -174,7 +173,7 @@ router.post("/scenarios/:date?/:name", async (req: Request, res: Response) => {
       data: fileUrl,
     });
   } catch (error) {
-    log.logger.error(error);
+    log.error(error);
     return res.sendStatus(500);
   }
 });
@@ -199,7 +198,7 @@ router.post("/solutions/:date?/:name", async (req: Request, res: Response) => {
       data: fileUrl,
     });
   } catch (error) {
-    log.logger.error(error);
+    log.error(error);
     return res.sendStatus(500);
   }
 });
@@ -222,7 +221,7 @@ router.put("/scenarios/:date?/:name", async (req: Request, res: Response) => {
       data: fileUrl,
     });
   } catch (error) {
-    log.logger.error(error);
+    log.error(error);
     return res.sendStatus(500);
   }
 });
@@ -248,7 +247,7 @@ router.put("/solutions/:date?/:name", async (req: Request, res: Response) => {
       data: fileUrl,
     });
   } catch (error) {
-    log.logger.error(error);
+    log.error(error);
     return res.sendStatus(500);
   }
 });

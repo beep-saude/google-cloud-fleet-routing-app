@@ -22,23 +22,23 @@ import { TravelMode } from '../models';
 export const mapFeatureKey = 'map';
 
 export interface State {
-  visibleMapLayers: { [id in MapLayerId]: MapLayer };
+  postSolveMapLayers: { [id in MapLayerId]: MapLayer };
 }
 
 export const initialState: State = {
-  visibleMapLayers: {
-    [MapLayerId.VisitRequests]: {
+  postSolveMapLayers: {
+    [MapLayerId.PostSolveVisitRequests]: {
       name: 'Shipments',
       icon: 'pickup',
       visible: true,
     },
-    [MapLayerId.FourWheel]: {
+    [MapLayerId.PostSolveFourWheel]: {
       name: 'Driving',
       icon: 'vehicle_icon',
       visible: true,
       travelMode: TravelMode.DRIVING,
     },
-    [MapLayerId.Walking]: {
+    [MapLayerId.PostSolveWalking]: {
       name: 'Walking',
       icon: 'walking',
       visible: true,
@@ -49,17 +49,17 @@ export const initialState: State = {
 
 export const reducer = createReducer(
   initialState,
-  on(MapActions.setLayerVisible, (state, { layerId, visible }) => ({
+  on(MapActions.setPostSolveLayerVisible, (state, { layerId, visible }) => ({
     ...state,
-    visibleMapLayers: {
-      ...state.visibleMapLayers,
+    postSolveMapLayers: {
+      ...state.postSolveMapLayers,
       [layerId]: {
-        ...state.visibleMapLayers[layerId],
+        ...state.postSolveMapLayers[layerId],
         visible,
       },
     },
   }))
 );
 
-export const selectVisibleMapLayers = (state: State): { [id in MapLayerId]: MapLayer } =>
-  state.visibleMapLayers;
+export const selectPostSolveMapLayers = (state: State): { [id in MapLayerId]: MapLayer } =>
+  state.postSolveMapLayers;

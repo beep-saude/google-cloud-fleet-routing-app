@@ -15,7 +15,6 @@ limitations under the License.
 */
 
 import express, { Response, Request } from "express";
-import * as pako from "pako";
 export const router = express.Router();
 
 import { google } from "@google-cloud/routeoptimization/build/protos/protos";
@@ -23,30 +22,16 @@ import { google } from "@google-cloud/routeoptimization/build/protos/protos";
 import { log } from "../logging";
 import { fleetRouting } from "../services/optimization";
 import { GRPC_TO_HTTP_STATUS_CODES, OPTIMIZATION_VALIDATION_CODES } from "../services/optimization-status-codes";
-import { upload } from "../upload";
 
 router.get("/healthz", async (req: Request, res: Response) => {
-  log.logger.debug("Health check (Optimization)");
+  log.debug("Health check (Optimization)");
   res.status(200).send("OK");
 });
 
 router.post(
   "/fleet-routing/optimize-tours",
-  upload.single('file'),
   async (req: Request, res: Response) => {
-    let body: google.maps.routeoptimization.v1.IOptimizeToursRequest;
-    if(req.headers['content-encoding'] == 'gzip') {
-      try {
-        const buffer = new Uint8Array(req.file!.buffer!);
-        const jsonString = pako.inflate(buffer, { to: 'string' });
-        body = JSON.parse(jsonString) as google.maps.routeoptimization.v1.IOptimizeToursRequest;
-      } catch (err: unknown) {
-        log.logger.warn('Unable to parse request body as gzip-compressed JSON string', err);
-        return res.status(400).send("Invalid request body, expected a gzip-compressed JSON string");
-      }
-    } else {
-      body = req.body as google.maps.routeoptimization.v1.IOptimizeToursRequest;
-    }
+    const body = req.body as google.maps.routeoptimization.v1.IOptimizeToursRequest;
 
     if (!body?.model) {
       return res
@@ -68,7 +53,7 @@ router.post(
       const response = await fleetRouting.optimizeTours(body);
       return res.status(200).send(response);
     } catch (err: any) {
-      log.logger.error(err);
+      log.error(err);
 
       const message = (err as Error).message || "UNKNOWN_ERROR";
 

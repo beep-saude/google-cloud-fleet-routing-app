@@ -27,7 +27,6 @@ import {
   ILatLng,
   IShipment,
   IVehicle,
-  TravelMode,
   ValidationErrorResponse,
 } from '../models';
 import { FileService } from './file.service';
@@ -257,21 +256,12 @@ export class CsvService {
     return errors;
   }
 
-  csvToVehicles(
-    csvVehicles: any[],
-    mapping: { [key: string]: string }
-  ): { vehicle: IVehicle; errors: ValidationErrorResponse[] }[] {
+  csvToVehicles(csvVehicles: any[], mapping: { [key: string]: string }): IVehicle[] {
     return csvVehicles.map((vehicle) => {
       // Conditionally add each field to the vehicle object, converting from csv strings as needed
       const parsedVehicle = {
         ...this.mapKeyToModelValue('label', 'Label', vehicle, mapping),
-        ...this.mapKeyToModelValue(
-          'travelMode',
-          'TravelMode',
-          vehicle,
-          mapping,
-          this.parseTravelMode
-        ),
+        ...this.mapKeyToModelValue('travelMode', 'TravelMode', vehicle, mapping),
         ...this.mapKeyToModelValue('unloadingPolicy', 'UnloadingPolicy', vehicle, mapping),
         ...this.mapKeyToModelValue('startWaypoint', 'StartWaypoint', vehicle, mapping),
         ...this.mapKeyToModelValue('endWaypoint', 'EndWaypoint', vehicle, mapping),
@@ -308,39 +298,8 @@ export class CsvService {
         ...this.mapToLoadLimits(vehicle, mapping),
         ...this.mapToVehicleTimeWindows(vehicle, mapping),
       };
-      return {
-        vehicle: parsedVehicle,
-        errors: this.validateVehicle(parsedVehicle),
-      };
+      return parsedVehicle;
     });
-  }
-
-  private validateVehicle(vehicle: IVehicle): ValidationErrorResponse[] {
-    const errors = [];
-
-    const loadLimitsError = Object.keys(vehicle.loadLimits).some((limitKey) => {
-      const limit = vehicle.loadLimits[limitKey];
-      const value = Number.parseFloat(limit.maxLoad as string);
-      return !Number.isInteger(value) || value < 1;
-    });
-
-    if (loadLimitsError) {
-      errors.push({
-        error: true,
-        message: 'Vehicle contains invalid load limits',
-        vehicle,
-      });
-    }
-
-    if ('travelMode' in vehicle && !vehicle.travelMode) {
-      errors.push({
-        error: true,
-        message: 'Vehicle has an invalid travel mode',
-        vehicle,
-      });
-    }
-
-    return errors;
   }
 
   private mapToPickup(shipment: any, mapping: { [key: string]: string }, timeWindow: any): any {
@@ -575,10 +534,6 @@ export class CsvService {
     } catch {
       return null;
     }
-  }
-
-  private parseTravelMode(value: string): number {
-    return TravelMode[value.toUpperCase()];
   }
 
   // Check map has the provided mapKey and if the model object has a value for the converted key

@@ -67,7 +67,7 @@ def make_shipment(
   assert shipment_visit is not None
 
   local_shipment_visit: cfr_json.VisitRequest = {
-      "arrivalWaypoint": cfr_json.get_arrival_waypoint(shipment_visit),
+      "arrivalWaypoint": shipment_visit["arrivalWaypoint"],
   }
   if (duration := shipment_visit.get("duration")) is not None:
     local_shipment_visit["duration"] = duration

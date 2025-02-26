@@ -54,15 +54,15 @@ class FleetRoutingService {
       // convert to milliseconds
       timeout *= 1000;
     }
-    log.logger.debug(`gRPC timeout: ${timeout}ms`);
+    log.debug(`gRPC timeout: ${timeout}ms`);
 
-    log.logger.debug("FleetRoutingService.optimizeTours: begin request");
+    log.debug("FleetRoutingService.optimizeTours: begin request");
 
     const [response] = await this._client.optimizeTours(request, <CallOptions>{
       timeout,
     });
 
-    log.logger.debug("FleetRoutingService.optimizeTours: end request");
+    log.debug("FleetRoutingService.optimizeTours: end request");
 
     return response;
   }
