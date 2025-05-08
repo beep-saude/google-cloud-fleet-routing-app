@@ -297,7 +297,7 @@ export class DownloadEffects {
     };
   }
 
-  localizedDateString(dateVal, locale = "pt-Br", timezone = "America/Sao_Paulo") {
+  localizedDateString(dateVal, locale = "pt-Br", timezone = "America/Sao_Paulo") : string {
     const dateObj = new Date(dateVal);
     return dateObj.toLocaleString(locale, {timeZone: timezone});
   }
