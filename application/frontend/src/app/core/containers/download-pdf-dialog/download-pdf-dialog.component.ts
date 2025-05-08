@@ -21,7 +21,7 @@ import {
   ChangeDetectorRef,
   OnDestroy,
 } from '@angular/core';
-import { MatDialogRef } from '@angular/material/dialog';
+import { MatLegacyDialogRef as MatDialogRef } from '@angular/material/legacy-dialog';
 import { Store } from '@ngrx/store';
 import { combineLatest, of, Subscription } from 'rxjs';
 import { CSV_COLUMNS_FOR_PDF, CsvData, DeckGLRoute, Vehicle } from '../../models';
@@ -177,7 +177,9 @@ export class DownloadPdfDialogComponent implements OnDestroy {
 
     const vehicleCsvData = this.csvData.filter((data) => data['Vehicle index'] === vehicleIndex);
     const tableKeys = Object.keys(CSV_COLUMNS_FOR_PDF);
-    const vehiclePdfTableData = vehicleCsvData.map((data) => tableKeys.map((key) => (key in data ? data[key] : '')))
+    const vehiclePdfTableData = vehicleCsvData.map((data) =>
+      tableKeys.map((key) => (key in data ? data[key] : ''))
+    );
 
     autoTable(doc, {
       head: [Object.values(CSV_COLUMNS_FOR_PDF)],

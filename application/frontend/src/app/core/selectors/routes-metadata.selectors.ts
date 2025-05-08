@@ -27,7 +27,7 @@ import {
 } from '../models';
 import * as fromShipmentRoute from './shipment-route.selectors';
 import * as fromRoutesMetadata from '../reducers/routes-metadata.reducer';
-import * as fromShipment from './shipment.selectors';
+import ShipmentSelectors from './shipment.selectors';
 import * as fromVehicle from 'src/app/core/selectors/vehicle.selectors';
 import * as fromVisit from 'src/app/core/selectors/visit.selectors';
 import {
@@ -115,7 +115,7 @@ const selectRouteMetadata = createSelector(
   fromShipmentRoute.selectEntities,
   fromVehicle.selectEntities,
   fromVisit.selectEntities,
-  fromShipment.selectEntities,
+  ShipmentSelectors.selectEntities,
   selectSelectedLookup,
   (routes, vehicles, visits, shipments, selectedLookup) =>
     toArray(routes).map<RouteMetadata>((route) => {
@@ -357,6 +357,22 @@ const selectDisplayColumns = createSelector(
   }
 );
 
+const selectViewHasChanged = createSelector(
+  selectFilters,
+  selectPageIndex,
+  selectPageSize,
+  selectSelected,
+  selectDisplayColumnsState,
+  selectSort,
+  (filters, pageIndex, pageSize, selected, displayColumns, sort) =>
+    filters.length > 0 ||
+    pageIndex !== 0 ||
+    pageSize !== 25 ||
+    selected.length > 0 ||
+    !!displayColumns ||
+    sort.direction?.length > 0
+);
+
 export const RoutesMetadataSelectors = {
   selectDisplayColumns,
   selectColumnsToDisplay,
@@ -386,6 +402,7 @@ export const RoutesMetadataSelectors = {
   selectSort,
   selectPageSize,
   selectPageIndex,
+  selectViewHasChanged,
 };
 
 export default RoutesMetadataSelectors;

@@ -59,7 +59,7 @@ import { unparse } from 'papaparse';
 import { durationSeconds, formattedDurationSeconds } from 'src/app/util';
 import { Modal } from '../models';
 import * as fromUI from '../selectors/ui.selectors';
-import { MatDialog } from '@angular/material/dialog';
+import { MatLegacyDialog as MatDialog } from '@angular/material/legacy-dialog';
 import { DownloadPdfDialogComponent } from '../containers/download-pdf-dialog/download-pdf-dialog.component';
 import protobuf from 'protobufjs';
 import { ExtendedConversionOptions } from 'src/app/util/canonical-protobuf';
@@ -224,7 +224,9 @@ export class DownloadEffects {
           vehicleIndex: route.vehicleIndex || 0,
           vehicleLabel: vehicle.label,
           visitType: 'Start of day',
-          visitEnd: this.localizedDateString(durationSeconds(route.vehicleStartTime).toNumber() * 1000),
+          visitEnd: this.localizedDateString(
+            durationSeconds(route.vehicleStartTime).toNumber() * 1000
+          ),
           timeToNextStop: formattedDurationSeconds(
             durationSeconds(route.visits[0]?.startTime || route.vehicleEndTime)
               .subtract(durationSeconds(route.vehicleStartTime))
@@ -255,7 +257,9 @@ export class DownloadEffects {
           vehicleIndex: route.vehicleIndex || 0,
           vehicleLabel: vehicle.label,
           visitType: 'End of day',
-          visitStart: this.localizedDateString(durationSeconds(route.vehicleEndTime).toNumber() * 1000),
+          visitStart: this.localizedDateString(
+            durationSeconds(route.vehicleEndTime).toNumber() * 1000
+          ),
         });
       }
     });
@@ -297,9 +301,9 @@ export class DownloadEffects {
     };
   }
 
-  localizedDateString(dateVal, locale = "pt-Br", timezone = "America/Sao_Paulo") {
+  localizedDateString(dateVal, locale = 'pt-Br', timezone = 'America/Sao_Paulo'): string {
     const dateObj = new Date(dateVal);
-    return dateObj.toLocaleString(locale, {timeZone: timezone});
+    return dateObj.toLocaleString(locale, { timeZone: timezone });
   }
 
   parseVisitData(
@@ -334,7 +338,7 @@ export class DownloadEffects {
     }
 
     const visitStart = this.localizedDateString(1000 * startSeconds.toNumber());
-    const visitEnd = this.localizedDateString(1000 * endSeconds.toNumber())
+    const visitEnd = this.localizedDateString(1000 * endSeconds.toNumber());
 
     return {
       visitStart,

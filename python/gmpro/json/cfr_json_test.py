@@ -14,6 +14,7 @@
 
 import copy
 import datetime
+import operator
 from typing import Sequence
 import unittest
 
@@ -488,6 +489,63 @@ class CombinedLoadDemandsTest(unittest.TestCase):
             "ore": {"amount": "2"},
         },
     )
+
+
+class UpdateLoadDemandsInPlacetest(unittest.TestCase):
+  """Tests for update_load_demands_in_place."""
+
+  def test_both_empty(self):
+    acc: dict[str, cfr_json.Load] = {}
+    operand: dict[str, cfr_json.Load] = {}
+    cfr_json.update_load_demands_in_place(acc, operand)
+    self.assertEqual(acc, {})
+
+  def test_disjoint_units(self):
+    acc: dict[str, cfr_json.Load] = {"wheat": {"amount": "2"}}
+    operand: dict[str, cfr_json.Load] = {
+        "wood": {"amount": "1"},
+        "ore": {"amount": "3"},
+    }
+    cfr_json.update_load_demands_in_place(acc, operand)
+    self.assertEqual(
+        acc,
+        {
+            "wheat": {"amount": "2"},
+            "wood": {"amount": "1"},
+            "ore": {"amount": "3"},
+        },
+    )
+
+  def test_with_some_overlap(self):
+    acc: dict[str, cfr_json.Load] = {
+        "wheat": {"amount": "2"},
+        "ore": {"amount": "4"},
+    }
+    operand: dict[str, cfr_json.Load] = {
+        "ore": {"amount": "1"},
+        "wood": {"amount": "3"},
+    }
+    cfr_json.update_load_demands_in_place(acc, operand)
+    self.assertEqual(
+        acc,
+        {
+            "wheat": {"amount": "2"},
+            "ore": {"amount": "5"},
+            "wood": {"amount": "3"},
+        },
+    )
+
+  def test_subtract(self):
+    acc: dict[str, cfr_json.Load] = {
+        "wheat": {"amount": "3"},
+        "ore": {"amount": "2"},
+    }
+    operand: dict[str, cfr_json.Load] = {
+        "ore": {"amount": "2"},
+        "wheat": {"amount": "1"},
+    }
+    cfr_json.update_load_demands_in_place(acc, operand, op=operator.sub)
+    self.assertEqual(acc, {"wheat": {"amount": "2"}})
 
 
 class GetShipmentsTest(unittest.TestCase):
@@ -2785,6 +2843,122 @@ class GetAdjacentPolylineTest(unittest.TestCase):
             self._MODEL, route, 1, inbound=False
         ),
         (2, "iviiH}}eMp@c@v@dOyAF"),
+    )
+
+
+class ValidateIndicesInRoutesTest(unittest.TestCase):
+  """Tests for validate_indices_in_routes."""
+
+  maxDiff = None
+
+  _MODEL: cfr_json.ShipmentModel = {
+      "shipments": [
+          {
+              "deliveries": [
+                  {"arrivalWaypoint": {"placeId": "A"}},
+                  {"arrivalWaypoint": {"placeId": "C"}},
+              ],
+              "pickups": [{"arrivalwaypoint": {"placeId": "D"}}],
+          },
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "B"}}]},
+          {"pickups": [{"departureWaypoint": {"placeId": "B"}}]},
+      ],
+      "vehicles": [
+          {"label": "V001"},
+          {"label": "V002"},
+      ],
+  }
+
+  def test_empty_model_empty_routes(self):
+    self.assertCountEqual(cfr_json.validate_indices_in_routes({}, ()), ())
+
+  def test_empty_model_non_empty_routes(self):
+    routes = ({"vehicleIndex": 0, "visits": [{"shipmentIndex": 1}]},)
+    expected_errors = (
+        "Invalid vehicle index: route_index=0, vehicle_index=0",
+        (
+            "Invalid shipment index: route_index=0, visit_index=0,"
+            " shipment_index=1"
+        ),
+    )
+
+    self.assertCountEqual(
+        cfr_json.validate_indices_in_routes({}, routes),
+        expected_errors,
+    )
+
+  def test_empty_routes(self):
+    self.assertCountEqual(
+        cfr_json.validate_indices_in_routes(self._MODEL, ()), ()
+    )
+
+  def test_valid_routes(self):
+    routes = (
+        {"visits": [{"shipmentIndex": 1}]},
+        {
+            "vehicleIndex": 1,
+            "visits": [
+                {"shipmentIndex": 2, "isPickup": True},
+                {"shipmentIndex": 0, "visitRequestIndex": 1},
+            ],
+        },
+    )
+    self.assertCountEqual(
+        cfr_json.validate_indices_in_routes(self._MODEL, routes), ()
+    )
+
+  def test_not_a_pickup(self):
+    routes = ({"visits": [{"shipmentIndex": 1, "isPickup": True}]},)
+    self.assertCountEqual(
+        cfr_json.validate_indices_in_routes(self._MODEL, routes),
+        (
+            (
+                "isPickup is set on a visit for a delivery-only shipment:"
+                " route_index=0, visit_index=0, shipment_index=1"
+            ),
+        ),
+    )
+
+  def test_not_a_delivery(self):
+    routes = ({"visits": [{"shipmentIndex": 2}]},)
+    self.assertCountEqual(
+        cfr_json.validate_indices_in_routes(self._MODEL, routes),
+        (
+            (
+                "isPickup is unset on a visit for a pickup-only shipment:"
+                " route_index=0, visit_index=0, shipment_index=2"
+            ),
+        ),
+    )
+
+  def test_invalid_pickup_visit_request(self):
+    routes = (
+        {
+            "visits": [
+                {"shipmentIndex": 0, "isPickup": True, "visitRequestIndex": 1}
+            ]
+        },
+    )
+    self.assertCountEqual(
+        cfr_json.validate_indices_in_routes(self._MODEL, routes),
+        (
+            (
+                "Invalid visit request index: route_index=0, visit_index=0,"
+                " shipment_index=0, visit_request_index=1"
+            ),
+        ),
+    )
+
+  def test_invalid_delivery_visit_request(self):
+    routes = ({"visits": [{"shipmentIndex": 1, "visitRequestIndex": 2}]},)
+    self.assertCountEqual(
+        cfr_json.validate_indices_in_routes(self._MODEL, routes),
+        (
+            (
+                "Invalid visit request index: route_index=0, visit_index=0,"
+                " shipment_index=1, visit_request_index=2"
+            ),
+        ),
     )
 
 

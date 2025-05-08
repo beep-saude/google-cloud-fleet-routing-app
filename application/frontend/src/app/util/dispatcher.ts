@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import { google } from '@google-cloud/optimization/build/protos/protos';
-import * as Long from 'long';
+import { google } from '@googlemaps/routeoptimization/build/protos/protos';
+import Long from 'long';
 
 const toObjectOptions = { longs: String };
 
