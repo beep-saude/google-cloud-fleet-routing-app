@@ -72,6 +72,195 @@ class TransformRequestTest(unittest.TestCase):
     }
     self.assertEqual(self.run_transform_request_main(request, ()), request)
 
+  def test_add_injected_first_solution_routes_from_file(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "pickups": [{}]},
+                {"label": "S002", "deliveries": [{}]},
+                {"label": "S003", "pickups": [{}]},
+            ],
+            "vehicles": [{"label": "V001"}, {"label": "V002"}],
+        }
+    }
+    response: cfr_json.OptimizeToursResponse = {
+        "routes": [
+            {
+                "visits": [
+                    {"shipmentIndex": 0, "isPickup": True},
+                    {"shipmentIndex": 2, "isPickup": True},
+                ]
+            },
+            {"vehicleIndex": 1, "visits": [{"shipmentIndex": 1}]},
+        ]
+    }
+    expected_output_request = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "pickups": [{}]},
+                {"label": "S002", "deliveries": [{}]},
+                {"label": "S003", "pickups": [{}]},
+            ],
+            "vehicles": [{"label": "V001"}, {"label": "V002"}],
+        },
+        "injectedFirstSolutionRoutes": [
+            {
+                "visits": [
+                    {"shipmentIndex": 0, "isPickup": True},
+                    {"shipmentIndex": 2, "isPickup": True},
+                ]
+            },
+            {"vehicleIndex": 1, "visits": [{"shipmentIndex": 1}]},
+        ],
+    }
+    response_file = path.join(
+        self.enterContext(tempfile.TemporaryDirectory()), "solution.json"
+    )
+    io_utils.write_json_to_file(response_file, response)
+    self.assertEqual(
+        self.run_transform_request_main(
+            request,
+            (
+                f"--add_injected_first_solution_routes_from_file={response_file}",
+            ),
+        ),
+        expected_output_request,
+    )
+
+  def test_add_injected_first_solution_routes_from_file__partial_routes(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "pickups": [{}]},
+                {"label": "S002", "deliveries": [{}]},
+                {"label": "S003", "pickups": [{}]},
+            ],
+            "vehicles": [{"label": "V001"}, {"label": "V002"}],
+        }
+    }
+    response: cfr_json.OptimizeToursResponse = {
+        "routes": [
+            {"vehicleIndex": 1, "visits": [{"shipmentIndex": 1}]},
+        ]
+    }
+    expected_output_request = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "pickups": [{}]},
+                {"label": "S002", "deliveries": [{}]},
+                {"label": "S003", "pickups": [{}]},
+            ],
+            "vehicles": [{"label": "V001"}, {"label": "V002"}],
+        },
+        "injectedFirstSolutionRoutes": [
+            {"vehicleIndex": 1, "visits": [{"shipmentIndex": 1}]},
+            {"vehicleIndex": 0, "vehicleLabel": "V001"},
+        ],
+    }
+    response_file = path.join(
+        self.enterContext(tempfile.TemporaryDirectory()), "solution.json"
+    )
+    io_utils.write_json_to_file(response_file, response)
+    self.assertEqual(
+        self.run_transform_request_main(
+            request,
+            (
+                f"--add_injected_first_solution_routes_from_file={response_file}",
+            ),
+        ),
+        expected_output_request,
+    )
+
+  def test_add_injected_first_solution_routes_from_file__partial_routes_and_labels(
+      self,
+  ):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "pickups": [{}]},
+                {"label": "S002", "deliveries": [{}]},
+                {"label": "S003", "pickups": [{}]},
+            ],
+            "vehicles": [
+                {"label": "V001"},
+                {"label": "V002"},
+                {"label": "V003"},
+            ],
+        },
+        "interpretInjectedSolutionsUsingLabels": True,
+    }
+    response: cfr_json.OptimizeToursResponse = {
+        "routes": [
+            {
+                "vehicleIndex": 1,
+                "vehicleLabel": "V002",
+                "visits": [{"shipmentIndex": 1}],
+            },
+            {
+                "vehicleLabel": "V001",
+            },
+        ]
+    }
+    expected_output_request = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "pickups": [{}]},
+                {"label": "S002", "deliveries": [{}]},
+                {"label": "S003", "pickups": [{}]},
+            ],
+            "vehicles": [
+                {"label": "V001"},
+                {"label": "V002"},
+                {"label": "V003"},
+            ],
+        },
+        "interpretInjectedSolutionsUsingLabels": True,
+        "injectedFirstSolutionRoutes": [
+            {
+                "vehicleIndex": 1,
+                "vehicleLabel": "V002",
+                "visits": [{"shipmentIndex": 1}],
+            },
+            {"vehicleLabel": "V001"},
+            {"vehicleIndex": 2, "vehicleLabel": "V003"},
+        ],
+    }
+    response_file = path.join(
+        self.enterContext(tempfile.TemporaryDirectory()), "solution.json"
+    )
+    io_utils.write_json_to_file(response_file, response)
+    self.assertEqual(
+        self.run_transform_request_main(
+            request,
+            (
+                f"--add_injected_first_solution_routes_from_file={response_file}",
+            ),
+        ),
+        expected_output_request,
+    )
+
+  def test_add_injected_first_solution_routes_from_file__invalid_route(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "pickups": [{}]},
+            ],
+            "vehicles": [{"label": "V001"}],
+        }
+    }
+    response: cfr_json.OptimizeToursResponse = {
+        "routes": [{"vehicleIndex": 1, "visits": [{"shipmentIndex": 2}]}]
+    }
+    response_file = path.join(
+        self.enterContext(tempfile.TemporaryDirectory()), "solution.json"
+    )
+    io_utils.write_json_to_file(response_file, response)
+    with self.assertRaisesRegex(ValueError, "Invalid vehicle index:"):
+      self.run_transform_request_main(
+          request,
+          (f"--add_injected_first_solution_routes_from_file={response_file}",),
+      )
+
   def test_shipment_penalty_cost_per_item__one_item_per_shipment(self):
     request: cfr_json.OptimizeToursRequest = {
         "model": {
@@ -425,6 +614,79 @@ class TransformRequestTest(unittest.TestCase):
             request, ("--remove_vehicles_by_label=V001,V002",)
         ),
         expected_output_request_v001_v002,
+    )
+
+  def test_remove_vehicles_by_index(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "allowedVehicleIndices": [0, 2]},
+                {
+                    "label": "S002",
+                    "costsPerVehicle": [100],
+                    "costsPerVehicleIndices": [1],
+                },
+            ],
+            "vehicles": [
+                {"label": "V001", "costPerHour": 30},
+                {"label": "V002", "costPerHour": 60},
+                {"label": "V003", "costPerHour": 90},
+            ],
+        }
+    }
+    expected_output_request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "allowedVehicleIndices": [0]},
+                {"label": "S002"},
+            ],
+            "vehicles": [
+                {"label": "V003", "costPerHour": 90},
+            ],
+        }
+    }
+    self.assertEqual(
+        self.run_transform_request_main(
+            request, ("--remove_vehicles_by_index=0,1",)
+        ),
+        expected_output_request,
+    )
+
+  def test_remove_vehicles_by_label_and_index(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "allowedVehicleIndices": [0, 2]},
+                {
+                    "label": "S002",
+                    "costsPerVehicle": [100],
+                    "costsPerVehicleIndices": [1],
+                },
+            ],
+            "vehicles": [
+                {"label": "V001", "costPerHour": 30},
+                {"label": "V002", "costPerHour": 60},
+                {"label": "V003", "costPerHour": 90},
+            ],
+        }
+    }
+    expected_output_request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "allowedVehicleIndices": [0]},
+                {"label": "S002"},
+            ],
+            "vehicles": [
+                {"label": "V003", "costPerHour": 90},
+            ],
+        }
+    }
+    self.assertEqual(
+        self.run_transform_request_main(
+            request,
+            ("--remove_vehicles_by_index=1", "--remove_vehicles_by_label=V001"),
+        ),
+        expected_output_request,
     )
 
   def test_remove_vehicles_and_injected_first_solution_routes_by_label(self):
@@ -1031,6 +1293,266 @@ class TransformRequestTest(unittest.TestCase):
         f"{request=}\n{expected_output_request=}",
     )
 
+  def test_merge_shipments(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "foo"},
+                        "duration": "30s",
+                    }],
+                    "label": "S001",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "foo"},
+                        "duration": "30s",
+                    }],
+                    "label": "S002",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "foo"},
+                        "duration": "30s",
+                    }],
+                    "label": "S003",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "10s",
+                    }],
+                    "label": "S004",
+                    "loadDemands": {"wood": {"amount": "150"}},
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "10s",
+                    }],
+                    "loadDemands": {"ore": {"amount": "60"}},
+                    "label": "S005",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "10s",
+                    }],
+                    "loadDemands": {"ore": {"amount": "90"}},
+                    "label": "S006",
+                },
+            ]
+        }
+    }
+    expected_request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "foo"},
+                        "duration": "90s",
+                    }],
+                    "label": "S001, S002, S003",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "30s",
+                    }],
+                    "label": "S004, S005, S006",
+                    "loadDemands": {
+                        "ore": {"amount": "150"},
+                        "wood": {"amount": "150"},
+                    },
+                },
+            ]
+        }
+    }
+    self.assertEqual(
+        self.run_transform_request_main(request, ("--merge_shipments",)),
+        expected_request,
+    )
+
+  def test_merge_shipments_with_constraints(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "foo"},
+                        "duration": "30s",
+                    }],
+                    "label": "S001",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "foo"},
+                        "duration": "30s",
+                    }],
+                    "label": "S002",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "foo"},
+                        "duration": "30s",
+                    }],
+                    "label": "S003",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "10s",
+                    }],
+                    "label": "S004",
+                    "loadDemands": {"wood": {"amount": "150"}},
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "10s",
+                    }],
+                    "loadDemands": {"ore": {"amount": "60"}},
+                    "label": "S005",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "10s",
+                    }],
+                    "loadDemands": {"ore": {"amount": "90"}},
+                    "label": "S006",
+                },
+            ]
+        }
+    }
+    expected_request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "foo"},
+                        "duration": "60s",
+                    }],
+                    "label": "S001, S002",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "foo"},
+                        "duration": "30s",
+                    }],
+                    "label": "S003",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "10s",
+                    }],
+                    "label": "S004",
+                    "loadDemands": {"wood": {"amount": "150"}},
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "10s",
+                    }],
+                    "loadDemands": {"ore": {"amount": "60"}},
+                    "label": "S005",
+                },
+                {
+                    "deliveries": [{
+                        "arrivalWaypoint": {"placeId": "bar"},
+                        "duration": "10s",
+                    }],
+                    "loadDemands": {"ore": {"amount": "90"}},
+                    "label": "S006",
+                },
+            ]
+        }
+    }
+    self.assertEqual(
+        self.run_transform_request_main(
+            request,
+            (
+                "--merge_shipments",
+                "--max_merged_visit_request_duration_seconds=60",
+                "--max_merged_load_demands=ore=100,wood=100",
+            ),
+        ),
+        expected_request,
+    )
+
+  def test_override_avoid_u_turns_for_all_shipments(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "pickups": [{}, {}], "deliveries": [{}]},
+                {"label": "S002", "pickups": [{}], "deliveries": [{}]},
+            ]
+        },
+    }
+    expected_request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {
+                    "label": "S001",
+                    "pickups": [
+                        {"avoidUTurns": True},
+                        {"avoidUTurns": True},
+                    ],
+                    "deliveries": [{"avoidUTurns": True}],
+                },
+                {
+                    "label": "S002",
+                    "pickups": [{"avoidUTurns": True}],
+                    "deliveries": [{"avoidUTurns": True}],
+                },
+            ]
+        },
+    }
+    self.assertEqual(
+        self.run_transform_request_main(
+            request, ("--override_avoid_u_turns=true",)
+        ),
+        expected_request,
+    )
+
+  def test_override_avoid_u_turns_for_some_shipments(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {"label": "S001", "pickups": [{}, {}]},
+                {"label": "S002", "pickups": [{}], "deliveries": [{}]},
+                {"label": "S003", "deliveries": [{}]},
+            ]
+        },
+    }
+    expected_request: cfr_json.OptimizeToursRequest = {
+        "model": {
+            "shipments": [
+                {
+                    "label": "S001",
+                    "pickups": [
+                        {"avoidUTurns": False},
+                        {"avoidUTurns": False},
+                    ],
+                },
+                {"label": "S002", "pickups": [{}], "deliveries": [{}]},
+                {"label": "S003", "deliveries": [{"avoidUTurns": False}]},
+            ]
+        },
+    }
+    self.assertEqual(
+        self.run_transform_request_main(
+            request,
+            (
+                "--override_avoid_u_turns=false",
+                "--override_avoid_u_turns_shipment_indices=0,2",
+            ),
+        ),
+        expected_request,
+    )
+
   def test_override_consider_road_traffic_true_from_false(self):
     request: cfr_json.OptimizeToursRequest = {
         "model": {},
@@ -1058,6 +1580,75 @@ class TransformRequestTest(unittest.TestCase):
     self.assertEqual(
         self.run_transform_request_main(
             request, ("--override_consider_road_traffic=false",)
+        ),
+        expected_request,
+    )
+
+  def test_override_internal_parameters(self):
+    request: cfr_json.OptimizeToursRequest = {"model": {}}
+    expected_request: cfr_json.OptimizeToursRequest = {
+        "model": {},
+        "internalParameters": "foobar",
+    }
+    self.assertEqual(
+        self.run_transform_request_main(
+            request, ("--override_internal_parameters", "foobar")
+        ),
+        expected_request,
+    )
+
+  def test_override_internal_parameters__reset_parameters(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {},
+        "internalParameters": "foobar",
+    }
+    expected_request: cfr_json.OptimizeToursRequest = {
+        "model": {},
+    }
+    self.assertEqual(
+        self.run_transform_request_main(
+            request, ("--override_internal_parameters=",)
+        ),
+        expected_request,
+    )
+
+  def test_override_internal_parameters__reset_already_clear_parameters(self):
+    request: cfr_json.OptimizeToursRequest = {"model": {}}
+    expected_request: cfr_json.OptimizeToursRequest = {"model": {}}
+    self.assertEqual(
+        self.run_transform_request_main(
+            request, ("--override_internal_parameters", "")
+        ),
+        expected_request,
+    )
+
+  def test_override_interpret_injected_routes__from_none(self):
+    request: cfr_json.OptimizeToursRequest = {"model": {}}
+    expected_request: cfr_json.OptimizeToursRequest = {
+        "model": {},
+        "interpretInjectedSolutionsUsingLabels": False,
+    }
+    self.assertEqual(
+        self.run_transform_request_main(
+            request,
+            ("--override_interpret_injected_solutions_using_labels=false",),
+        ),
+        expected_request,
+    )
+
+  def test_override_interpret_injected_routes__from_false(self):
+    request: cfr_json.OptimizeToursRequest = {
+        "model": {},
+        "interpretInjectedSolutionsUsingLabels": False,
+    }
+    expected_request: cfr_json.OptimizeToursRequest = {
+        "model": {},
+        "interpretInjectedSolutionsUsingLabels": True,
+    }
+    self.assertEqual(
+        self.run_transform_request_main(
+            request,
+            ("--override_interpret_injected_solutions_using_labels=true",),
         ),
         expected_request,
     )

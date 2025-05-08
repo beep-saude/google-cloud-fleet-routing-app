@@ -15,7 +15,10 @@ limitations under the License.
 */
 
 import { ChangeDetectionStrategy, Component, Input, OnDestroy, OnInit } from '@angular/core';
-import { MatDialog, MatDialogRef } from '@angular/material/dialog';
+import {
+  MatLegacyDialog as MatDialog,
+  MatLegacyDialogRef as MatDialogRef,
+} from '@angular/material/legacy-dialog';
 import { Dictionary } from '@ngrx/entity';
 import { select, Store } from '@ngrx/store';
 import { Observable, of, Subscription } from 'rxjs';
@@ -154,7 +157,7 @@ export class PreSolveEditShipmentDialogComponent implements OnInit, OnDestroy {
     unsetFields: string[];
   }): void {
     if (this.shipmentIds.length === 1) {
-      this.store.pipe(select(fromShipment.selectEntities), take(1)).subscribe((shipments) => {
+      this.store.pipe(select(ShipmentSelectors.selectEntities), take(1)).subscribe((shipments) => {
         const changes = getShipmentEditChanges(shipment, visitRequests, shipments);
         this.store.dispatch(
           PreSolveShipmentActions.saveShipment({ changes, changeTime: Date.now() })
@@ -171,6 +174,7 @@ export class PreSolveEditShipmentDialogComponent implements OnInit, OnDestroy {
           .open(ConfirmBulkEditDialogComponent, {
             data: {
               fields: editedFields,
+              isShipment: true,
             },
           })
           .afterClosed()

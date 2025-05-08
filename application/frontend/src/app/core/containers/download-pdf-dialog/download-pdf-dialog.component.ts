@@ -21,7 +21,7 @@ import {
   ChangeDetectorRef,
   OnDestroy,
 } from '@angular/core';
-import { MatDialogRef } from '@angular/material/dialog';
+import { MatLegacyDialogRef as MatDialogRef } from '@angular/material/legacy-dialog';
 import { Store } from '@ngrx/store';
 import { combineLatest, of, Subscription } from 'rxjs';
 import { CSV_COLUMNS_FOR_PDF, CsvData, DeckGLRoute, Vehicle } from '../../models';

@@ -33,7 +33,10 @@ import {
   NgForm,
 } from '@angular/forms';
 import { ErrorStateMatcher } from '@angular/material/core';
-import { MatDialog, MatDialogRef } from '@angular/material/dialog';
+import {
+  MatLegacyDialog as MatDialog,
+  MatLegacyDialogRef as MatDialogRef,
+} from '@angular/material/legacy-dialog';
 import { MatStepper } from '@angular/material/stepper';
 import { Store } from '@ngrx/store';
 import { concat, forkJoin, of } from 'rxjs';
@@ -528,6 +531,7 @@ export class CsvUploadDialogComponent implements OnDestroy, OnInit {
         UnloadingPolicy: this.fb.control(''),
         CostPerHour: this.fb.control(''),
         CostPerTraveledHour: this.fb.control(''),
+        CostPerKilometer: this.fb.control(''),
         FixedCost: this.fb.control(''),
         UsedIfRouteIsEmpty: this.fb.control(''),
         TravelDurationMultiple: this.fb.control(''),
@@ -1143,16 +1147,22 @@ export class CsvUploadDialogComponent implements OnDestroy, OnInit {
 
   geocodingResultsToVehicles(res: any): void {
     for (let i = 0; i < res.length; i += 2) {
-      this.scenario.model.vehicles[i / 2].startWaypoint = {
-        location: {
-          latLng: res[i],
-        },
-      };
-      this.scenario.model.vehicles[i / 2].endWaypoint = {
-        location: {
-          latLng: res[i + 1],
-        },
-      };
+      const start = res[i];
+      const end = res[i + 1];
+      if (start) {
+        this.scenario.model.vehicles[i / 2].startWaypoint = {
+          location: {
+            latLng: res[i],
+          },
+        };
+      }
+      if (end) {
+        this.scenario.model.vehicles[i / 2].endWaypoint = {
+          location: {
+            latLng: res[i + 1],
+          },
+        };
+      }
     }
   }
 
