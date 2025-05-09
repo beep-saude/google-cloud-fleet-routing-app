@@ -180,7 +180,9 @@ export class DownloadPdfDialogComponent implements OnDestroy {
 
     const vehicleCsvData = this.csvData.filter((data) => data['Vehicle index'] === vehicleIndex);
     const tableKeys = Object.keys(CSV_COLUMNS_FOR_PDF);
-    const vehiclePdfTableData = vehicleCsvData.map((data) => tableKeys.map((key) => (key in data ? data[key] : '')))
+    const vehiclePdfTableData = vehicleCsvData.map((data) =>
+      tableKeys.map((key) => (key in data ? data[key] : ''))
+    );
 
     autoTable(doc, {
       head: [Object.values(CSV_COLUMNS_FOR_PDF)],

@@ -105,7 +105,7 @@ export const CSV_COLUMNS_FOR_PDF = {
   'Visit start': 'Horário de chegada',
   'Visit end': 'Horário de termino',
   'Time to next stop': 'Tempo até o proximo',
-}
+};
 
 export const CSV_COLUMN_ORDER = [
   'vehicleIndex',
