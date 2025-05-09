@@ -163,10 +163,17 @@ class ParkingLocation:
     coordinates: Only for initialization & deprecated. The coordinates of the
       parking location. Converted to `waypoint` during the construction of the
       object. Exactly one of `coordinates` and `waypoint` must be provided.
-    waypoint: The waypoint for the parking location. When delivering a shipment
-      using the two-step delivery, the driver first parks at this waypoint, and
-      then uses a different mode of transport to the final delivery locations.
-      Exactly one of `coordinates` and `waypoint` must be provided.
+    waypoint: The driving-specific waypoint for the parking location. When
+      delivering a shipment using two-step delivery, the driver first parks
+      at this waypoint, and then uses a different mode of transport to the final
+      delivery locations, which may use other waypoints. Exactly one of
+      `coordinates` and `waypoint` must be provided.
+    local_waypoint: The local-specific waypoint for the parking location.
+      When delivering a shipment using two-step delivery, after parking at the
+      `waypoint`, the driver walks out to the final delivery locations using the
+      `local_waypoint`. If not provided, the `waypoint` is used for local.
+    avoid_u_turns: Specifies whether u-turn avoidance should be applied to the
+      parking location waypoint.
     tag: A unique name used for the parking location. Used to match parking
       locations in `ShipmentParkingMap`, and it is also used in the labels of
       the virtual shipments generated for parking locations by the planner.
@@ -233,12 +240,16 @@ class ParkingLocation:
   waypoint: cfr_json.Waypoint = dataclasses.field(
       default_factory=lambda: _PARKING_WAYPOINT_SENTINEL
   )
+  local_waypoint: cfr_json.Waypoint = dataclasses.field(
+      default_factory=lambda: _PARKING_WAYPOINT_SENTINEL
+  )
   coordinates: dataclasses.InitVar[cfr_json.LatLng | None] = None
 
   travel_mode: int = 1
   travel_duration_multiple: float = 1.0
 
   avoid_indoor: bool | None = None
+  avoid_u_turns: bool | None = None
 
   delivery_load_limits: Mapping[str, int] | None = None
   cost_per_load_unit_per_kilometer: Mapping[str, cfr_json.LoadCost] | None = (
@@ -279,20 +290,24 @@ class ParkingLocation:
 
   @functools.cached_property
   def waypoint_for_local_model(self) -> cfr_json.Waypoint:
-    """Returns a waypoint for the parking to be used in local models.
+    """Returns a waypoint for parking to be used in local models.
 
-    Local models typically use with travel modes other than DRIVE, which is not
-    compatible with sideOfRoad. To allow using `sideOfRoad` in parking location
-    waypoints (so that it is used in the global model), we need to remove it
-    from the waypoint when it is used in a local model.
+    Local models typically use travel modes other than DRIVE. This method
+    returns the local waypoint if it is provided, otherwise it returns the
+    global waypoint. It is not compatible with sideOfRoad.  To allow using
+    `sideOfRoad` in parking location waypoints (so that it is used in the global
+    model), we need to remove it from the waypoint when it is used in a local
+    model.
 
     Returns:
-      The waypoint of the parking location. When the travel mode of the parking
-      location is not DRIVE, `sideOfRoad` is removed from the waypoint. The
-      returned object is cached and must not be mutated.
+      The waypoint for the parking location based on the travel mode. When the
+      travel mode of the parking location is not DRIVE, `sideOfRoad` is removed
+      from the waypoint. The returned object is cached and must not be mutated.
     """
     if self.travel_mode == 1:
       return self.waypoint
+    if self.local_waypoint is not _PARKING_WAYPOINT_SENTINEL:
+      return self.local_waypoint
     waypoint = copy.deepcopy(self.waypoint)
     waypoint.pop("sideOfRoad", None)
     return waypoint

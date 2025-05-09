@@ -26,9 +26,12 @@ Typical usage:
 """
 
 import argparse
-from collections.abc import Callable, Collection, Iterable, Sequence, Set
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence, Set
 import dataclasses
+import datetime
 import enum
+import itertools
+import json
 import logging
 from typing import Self
 
@@ -37,6 +40,7 @@ from . import cfr_json
 from . import io_utils
 from . import transforms
 from . import transforms_breaks
+from . import transforms_merge
 
 
 class ItemsPerShipment(utils.EnumForArgparse):
@@ -93,6 +97,22 @@ def _parse_comma_separated_index_list(value: str) -> Sequence[int]:
     ) from None
 
 
+def _str_to_int_mapping(value: str) -> Mapping[str, int]:
+  """Parses a mapping in the format `key1=value1,key2=value,...`."""
+  try:
+    mapping = {}
+    for part in value.split(","):
+      part = part.strip()
+      key, value_str = part.split("=")
+      mapping[key] = int(value_str)
+  except ValueError:
+    raise argparse.ArgumentTypeError(
+        "Expected a mapping in the format key1=value1,key2=value2, got"
+        " {value!r}"
+    ) from None
+  return mapping
+
+
 def _non_negative_float(value: str) -> float:
   value_as_float = float(value)
   if value_as_float < 0:
@@ -133,6 +153,7 @@ class Flags:
   visit_duration_scaling_factor: float | None
 
   duplicate_vehicles_by_label: Sequence[str] | None
+  remove_vehicles_by_index: Sequence[int] | None
   remove_vehicles_by_label: Sequence[str] | None
   reduce_to_shipments_by_index: Sequence[int] | None
   reduce_to_vehicles_by_label: Sequence[str] | None
@@ -146,6 +167,16 @@ class Flags:
   transform_breaks: str | None
 
   override_consider_road_traffic: bool | None
+  override_avoid_u_turns: bool | None
+  override_avoid_u_turns_shipment_indices: Sequence[int] | None
+  override_internal_parameters: str | None
+
+  add_injected_first_solution_routes_from_file: str | None
+  override_interpret_injected_solutions_using_labels: bool | None
+
+  merge_shipments: bool
+  max_merged_visit_request_duration_seconds: int | None
+  max_merged_load_demands: Mapping[str, int] | None
 
   @property
   def items_per_shipment_callback(self) -> Callable[[cfr_json.Shipment], int]:
@@ -251,6 +282,14 @@ class Flags:
         ),
     )
     parser.add_argument(
+        "--remove_vehicles_by_index",
+        type=_parse_comma_separated_index_list,
+        help=(
+            "A comma-separated list of vehicle indices. Removes all vehicles"
+            " whose index appears in the list."
+        ),
+    )
+    parser.add_argument(
         "--remove_vehicles_by_label",
         type=_parse_comma_separated_list,
         help=(
@@ -321,6 +360,36 @@ class Flags:
         type=_explicit_true_or_false,
         default=None,
     )
+    parser.add_argument(
+        "--override_avoid_u_turns",
+        help=(
+            "Specifies an override for the value of `avoidUTurns` in the visit"
+            " requests in the model. When unspecified, the original value is"
+            " preserved. When `--override_avoid_u_turns_shipment_indices` is"
+            " specified, the override is done only for the specified shipments;"
+            " otherwise, it's done for all shipments."
+        ),
+        type=_explicit_true_or_false,
+        default=None,
+    )
+    parser.add_argument(
+        "--override_avoid_u_turns_shipment_indices",
+        type=_parse_comma_separated_index_list,
+        help=(
+            "The list of shipment indices where `--override_avoid_u_turns`"
+            " should be applied. When unspecified, the transform is applied to"
+            " all shipments."
+        ),
+    )
+    parser.add_argument(
+        "--override_internal_parameters",
+        help=(
+            "When specified, overrides the internal parameters string in the"
+            " request. When specified with an empty string as a value, removes"
+            " the internal parameters string from the request."
+        ),
+        default=None,
+    )
     transforms.OnInfeasibleShipment.add_as_argument(
         parser,
         "--infeasible_shipment_after_removing_vehicle",
@@ -338,6 +407,58 @@ class Flags:
             " the shipment removed via --reduce_to_shipments_by_index."
         ),
         default=transforms.OnRemovedShipmentUsedInVisit.FAIL,
+    )
+    parser.add_argument(
+        "--add_injected_first_solution_routes_from_file",
+        help=(
+            "When specified, the value must be the path of a GMPRO response"
+            " file in the JSON format that corresponds to the input request."
+            " Takes routes from the response and adds them as"
+            " `injectedFirstSolutionRoutes` to the request. Checks that"
+            " vehicle, shipment and visit request indices on the routes are"
+            " valid."
+        ),
+        default=None,
+    )
+    parser.add_argument(
+        "--override_interpret_injected_solutions_using_labels",
+        help=(
+            "When specified, overrides the"
+            " `interpretInjectedSolutionsUsingLabels` field in the request with"
+            " the given value."
+        ),
+        type=_explicit_true_or_false,
+        default=None,
+    )
+    parser.add_argument(
+        "--merge_shipments",
+        help="When specified, merges compatible shipments in the model.",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--max_merged_visit_request_duration_seconds",
+        help=(
+            "When --merge_shipments is used, this flag specifies the maximal"
+            " allowed duration of a visit request created by merging two or"
+            " more input visit requests. Note that shipments whose visit"
+            " requests are longer than this duration will be preserved in the"
+            " model, but they will not be used for merging."
+        ),
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--max_merged_load_demands",
+        help=(
+            "When --merge_shipments is used, this flag specifies the maximal"
+            " allowed load demand of a shipment that is created by merging two"
+            " or more input shipments. Note that shipments that exceed the"
+            " limits specified by this flag will be preserved in the model, but"
+            " they will not be used for merging."
+        ),
+        type=_str_to_int_mapping,
+        default=None,
     )
 
     parsed_args = parser.parse_args(args)
@@ -374,46 +495,56 @@ def _get_indices_of_vehicles_with_labels(
   return selected_indices, unseen_labels
 
 
-def _remove_vehicles_by_label(
+def _remove_vehicles(
     request: cfr_json.OptimizeToursRequest,
-    vehicle_labels: Iterable[str],
+    vehicle_indices: Iterable[int] | None,
+    vehicle_labels: Iterable[str] | None,
     on_infeasible_shipment: transforms.OnInfeasibleShipment,
     allow_unseen_vehicle_labels: bool = False,
 ) -> None:
-  """Removes all vehicles in the request whose label is in `vehicle_labels`.
+  """Removes vehicles specified by `vehicle_indices` and `vehicle_labels`.
 
   Args:
     request: The request in which the vehicles are removed.
-    vehicle_labels: The labels of vehicles to be removed from the model.
+    vehicle_indices: The indices of the vehicles to be removed from the model.
+    vehicle_labels: The labels of vehicles to be removed from the model. When a
+      label from `vehicle_labels` is used by multiple vehicles, removes all such
+      vehicles.
     on_infeasible_shipment: The behavior of the tool when a shipment becomes
       trivially infeasible after removing a vehicle.
-    allow_unseen_labels: When False, the function fails with an exception if
-      `vehicle_labels` contains a string that doesn't correspond to a vehicle
-      label. When True, unseen vehicle labels are not checked.
+    allow_unseen_vehicle_labels: When False, the function fails with an
+      exception if `vehicle_labels` contains a string that doesn't correspond to
+      a vehicle label. When True, unseen vehicle labels are not checked.
   """
   model = request["model"]
-  indices_to_remove, unseen_labels = _get_indices_of_vehicles_with_labels(
-      model, vehicle_labels
-  )
+  indices_to_remove = set()
+  if vehicle_indices is not None:
+    indices_to_remove.update(vehicle_indices)
 
-  if unseen_labels:
-    unseen_labels_str = ", ".join(
-        repr(label) for label in sorted(unseen_labels)
+  if vehicle_labels is not None:
+    indices_from_labels, unseen_labels = _get_indices_of_vehicles_with_labels(
+        model, vehicle_labels
     )
-    if allow_unseen_vehicle_labels:
-      logging.warning(
-          "Unseen vehicle labels in  --remove_vehicles_by_label: %s",
-          unseen_labels_str,
+    indices_to_remove.update(indices_from_labels)
+
+    if unseen_labels:
+      unseen_labels_str = ", ".join(
+          repr(label) for label in sorted(unseen_labels)
       )
-    else:
-      raise ValueError(
-          "Vehicle labels from --remove_vehicles_by_label do not appear in the"
-          f" model: {unseen_labels_str}"
-      )
+      if allow_unseen_vehicle_labels:
+        logging.warning(
+            "Unseen vehicle labels in  --remove_vehicles_by_label: %s",
+            unseen_labels_str,
+        )
+      else:
+        raise ValueError(
+            "Vehicle labels from --remove_vehicles_by_label do not appear in"
+            f" the model: {unseen_labels_str}"
+        )
 
   new_vehicle_for_old_vehicle, new_shipment_for_old_shipment = (
       transforms.remove_vehicles(
-          model, set(indices_to_remove), on_infeasible_shipment
+          model, indices_to_remove, on_infeasible_shipment
       )
   )
   transforms.remove_vehicles_from_injected_first_solution_routes(
@@ -533,6 +664,73 @@ def _duplicate_vehicles_by_label(
     transforms.duplicate_vehicle(model, vehicle_index)
 
 
+def _add_injected_first_solution_routes_from_file(
+    request: cfr_json.OptimizeToursRequest,
+    response_file: str,
+) -> None:
+  """Adds routes from `response` as injected first solution routes to `request`.
+
+  Any existing injected first solution routes that were in `request` before are
+  replaced by this function.
+
+  Args:
+    request: The request in which the first solution routes are replaced.
+    response_file: The name of the file from which the injected routes are
+      loaded.
+
+  Raises:
+    ValueError: When the routes do not correspond to the request or when the
+      input file could not be loaded.
+  """
+  try:
+    response = io_utils.read_json_from_file(response_file)
+  except (json.JSONDecodeError, OSError) as err:
+    raise ValueError(
+        f"Could not load the response from {response_file!r}"
+    ) from err
+  response_validation_errors = cfr_json.validate_indices_in_routes(
+      request["model"], cfr_json.get_routes(response)
+  )
+  if response_validation_errors:
+    error_message_parts = [
+        "Routes from the response do not correspond to the request:"
+    ]
+    error_message_parts.extend(
+        itertools.islice(response_validation_errors, 0, 5)
+    )
+    if len(response_validation_errors) > 5:
+      error_message_parts.append(
+          f"...and {len(response_validation_errors) - 5} more..."
+      )
+    raise ValueError("\n".join(error_message_parts))
+
+  # As of 2025-01-31, the API requires that injectedFirstSolutionRoutes contains
+  # a route for each vehicle. To make sure that this always holds, we add an
+  # empty route for each vehicle that is not covered by the routes imported from
+  # the file.
+  seen_vehicles = set()
+  use_labels = request.get("interpretInjectedSolutionsUsingLabels", False)
+  # TODO(ondrasej): Make the index validation use labels too, when required.
+  injected_routes = []
+  for route in cfr_json.get_routes(response):
+    injected_routes.append(route)
+    if use_labels:
+      seen_vehicles.add(route.get("vehicleLabel", ""))
+    else:
+      seen_vehicles.add(route.get("vehicleIndex", 0))
+
+  for vehicle_index, vehicle in enumerate(request["model"]["vehicles"]):
+    vehicle_label = vehicle.get("label", "")
+    vehicle_id = vehicle_label if use_labels else vehicle_index
+    if vehicle_id not in seen_vehicles:
+      injected_routes.append({
+          "vehicleIndex": vehicle_index,
+          "vehicleLabel": vehicle_label,
+      })
+
+  request["injectedFirstSolutionRoutes"] = injected_routes
+
+
 def main(args: Sequence[str] | None = None) -> None:
   """Runs the command-line utility.
 
@@ -549,6 +747,20 @@ def main(args: Sequence[str] | None = None) -> None:
 
   if flags.override_consider_road_traffic is not None:
     request["considerRoadTraffic"] = flags.override_consider_road_traffic
+  if flags.override_interpret_injected_solutions_using_labels is not None:
+    request["interpretInjectedSolutionsUsingLabels"] = (
+        flags.override_interpret_injected_solutions_using_labels
+    )
+  if flags.add_injected_first_solution_routes_from_file is not None:
+    _add_injected_first_solution_routes_from_file(
+        request, flags.add_injected_first_solution_routes_from_file
+    )
+  if flags.override_avoid_u_turns is not None:
+    transforms.set_avoid_u_turns(
+        model,
+        flags.override_avoid_u_turns,
+        flags.override_avoid_u_turns_shipment_indices,
+    )
   if flags.shipment_penalty_cost_per_item is not None:
     transforms.make_all_shipments_optional(
         model,
@@ -574,10 +786,11 @@ def main(args: Sequence[str] | None = None) -> None:
         flags.reduce_to_shipments_by_index,
         shipment_used_in_visit=flags.removed_shipment_used_in_injected_route_visit,
     )
-  if removed_labels := flags.remove_vehicles_by_label:
-    _remove_vehicles_by_label(
+  if flags.remove_vehicles_by_label or flags.remove_vehicles_by_index:
+    _remove_vehicles(
         request,
-        removed_labels,
+        flags.remove_vehicles_by_index,
+        flags.remove_vehicles_by_label,
         flags.infeasible_shipment_after_removing_vehicle,
         allow_unseen_vehicle_labels=flags.allow_unseen_vehicle_labels,
     )
@@ -600,6 +813,38 @@ def main(args: Sequence[str] | None = None) -> None:
         flags.transform_breaks
     )
     transforms_breaks.transform_breaks(model, break_transform_rules)
+  if (internal_parameters := flags.override_internal_parameters) is not None:
+    if internal_parameters:
+      request["internalParameters"] = internal_parameters
+    else:
+      request.pop("internalParameters", None)
+  if flags.merge_shipments:
+    if (
+        request.get("injectedFirstSolutionRoutes")
+        or request.get("injectedSolutionConstraint")
+        or request.get("refreshDetailsRoutes")
+    ):
+      raise ValueError(
+          "Merging shipments is incompatible with injected routes."
+      )
+    max_visit_duration = datetime.timedelta.max
+    if flags.max_merged_visit_request_duration_seconds is not None:
+      max_visit_duration = datetime.timedelta(
+          seconds=flags.max_merged_visit_request_duration_seconds
+      )
+    original_num_shipments = len(cfr_json.get_shipments(model))
+    merged_shipments, _ = transforms_merge.merge_shipments(
+        model,
+        max_visit_duration=max_visit_duration,
+        load_limits=flags.max_merged_load_demands,
+    )
+    logging.info(
+        "Merged co-located shipments. Original: %d shipments, merged: %d"
+        " shipments",
+        original_num_shipments,
+        len(merged_shipments),
+    )
+    model["shipments"] = merged_shipments
 
   io_utils.write_json_to_file(flags.output_file, request)
 

@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 import { Component, ChangeDetectionStrategy, Inject } from '@angular/core';
-import { MAT_DIALOG_DATA } from '@angular/material/dialog';
+import { MAT_LEGACY_DIALOG_DATA as MAT_DIALOG_DATA } from '@angular/material/legacy-dialog';
 
 @Component({
   selector: 'app-confirm-bulk-edit-dialog',
@@ -24,5 +24,5 @@ import { MAT_DIALOG_DATA } from '@angular/material/dialog';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ConfirmBulkEditDialogComponent {
-  constructor(@Inject(MAT_DIALOG_DATA) public data: { fields: string[] }) {}
+  constructor(@Inject(MAT_DIALOG_DATA) public data: { fields: string[]; isShipment: boolean }) {}
 }

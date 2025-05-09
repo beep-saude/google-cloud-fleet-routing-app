@@ -28,6 +28,7 @@ import {
   IShipment,
   IVehicle,
   TravelMode,
+  UnloadingPolicy,
   ValidationErrorResponse,
 } from '../models';
 import { FileService } from './file.service';
@@ -56,7 +57,7 @@ export class CsvService {
           // start location
           this.geocodeLocation(vehicle.startWaypoint).pipe(
             map((g) => {
-              if ((g as GeocodeErrorResponse).error) {
+              if ((g as GeocodeErrorResponse)?.error) {
                 g = <GeocodeErrorResponse>{
                   ...g,
                   source: vehicle,
@@ -272,7 +273,13 @@ export class CsvService {
           mapping,
           this.parseTravelMode
         ),
-        ...this.mapKeyToModelValue('unloadingPolicy', 'UnloadingPolicy', vehicle, mapping),
+        ...this.mapKeyToModelValue(
+          'unloadingPolicy',
+          'UnloadingPolicy',
+          vehicle,
+          mapping,
+          this.parseUnloadingPolicy
+        ),
         ...this.mapKeyToModelValue('startWaypoint', 'StartWaypoint', vehicle, mapping),
         ...this.mapKeyToModelValue('endWaypoint', 'EndWaypoint', vehicle, mapping),
         ...this.mapKeyToModelValue('costPerHour', 'CostPerHour', vehicle, mapping, parseFloat),
@@ -641,11 +648,27 @@ export class CsvService {
   }
 
   private toBool(value: string): boolean {
-    return !!JSON.parse(value.toLowerCase());
+    try {
+      return !!JSON.parse(value.toLowerCase());
+    } catch {
+      return false;
+    }
   }
 
   private toDuration(value: any): any {
     return { seconds: value };
+  }
+
+  private parseUnloadingPolicy(value: any): UnloadingPolicy {
+    let finalValue = UnloadingPolicy.UNLOADING_POLICY_UNSPECIFIED;
+
+    Object.keys(UnloadingPolicy).forEach((key) => {
+      if (key === value || UnloadingPolicy[key] === parseInt(value)) {
+        finalValue = UnloadingPolicy[key];
+      }
+    });
+
+    return finalValue;
   }
 
   private commaSeparatedStringToIntArray(value: string): number[] {

@@ -22,10 +22,10 @@ import {
   UntypedFormGroup,
   Validators,
 } from '@angular/forms';
-import { MatSelectChange } from '@angular/material/select';
-import { MatSlideToggleChange } from '@angular/material/slide-toggle';
+import { MatLegacySelectChange as MatSelectChange } from '@angular/material/legacy-select';
+import { MatLegacySlideToggleChange as MatSlideToggleChange } from '@angular/material/legacy-slide-toggle';
 import { select, Store } from '@ngrx/store';
-import * as Long from 'long';
+import Long from 'long';
 import { combineLatest, Observable, Subscription } from 'rxjs';
 import { Timezone } from 'src/app/shared/models';
 import {

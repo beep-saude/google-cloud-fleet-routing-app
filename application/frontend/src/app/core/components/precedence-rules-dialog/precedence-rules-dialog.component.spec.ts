@@ -20,10 +20,10 @@ import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { SharedModule } from 'src/app/shared/shared.module';
 import { MaterialModule } from 'src/app/material';
 import { provideMockStore } from '@ngrx/store/testing';
-import * as shipmentSelectors from '../../../core/selectors/shipment.selectors';
 import ShipmentModelSelectors from '../../selectors/shipment-model.selectors';
 import { MatIconRegistry } from '@angular/material/icon';
 import { FakeMatIconRegistry } from 'src/test/material-fakes';
+import ShipmentSelectors from '../../selectors/shipment.selectors';
 
 describe('PrecedenceRulesDialogComponent', () => {
   let component: PrecedenceRulesDialogComponent;
@@ -35,14 +35,15 @@ describe('PrecedenceRulesDialogComponent', () => {
       imports: [FormsModule, ReactiveFormsModule, SharedModule, MaterialModule],
       providers: [
         provideMockStore({
-          selectors: [{ selector: ShipmentModelSelectors.selectPrecedenceRules, value: [] }],
+          selectors: [
+            { selector: ShipmentModelSelectors.selectPrecedenceRules, value: [] },
+            { selector: ShipmentSelectors.selectAll, value: [] },
+          ],
         }),
       ],
     })
       .overrideProvider(MatIconRegistry, { useFactory: () => new FakeMatIconRegistry() })
       .compileComponents();
-
-    spyOnProperty(shipmentSelectors, 'selectAll').and.returnValue(() => []);
 
     fixture = TestBed.createComponent(PrecedenceRulesDialogComponent);
     component = fixture.componentInstance;
