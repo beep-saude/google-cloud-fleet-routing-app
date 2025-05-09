@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import datetime
-from importlib import resources
-import json
-import logging
 import unittest
 
 from . import analysis
@@ -71,15 +69,22 @@ class GroupGlobalVisits(unittest.TestCase):
         )
     )
     for group, expected_group in zip(groups, expected_groups, strict=True):
-      (tag, num_rounds, shipments, arrival_visit_index,
-       departure_visit_index) = group
+      (
+          tag,
+          num_rounds,
+          shipments,
+          arrival_visit_index,
+          departure_visit_index,
+      ) = group
 
       visits = cfr_json.get_visits(self._scenario.routes[0])
       if tag is not None:
         self.assertEqual(
-            visits[arrival_visit_index]["shipmentLabel"], f"{tag} arrival")
+            visits[arrival_visit_index]["shipmentLabel"], f"{tag} arrival"
+        )
         self.assertEqual(
-            visits[departure_visit_index]["shipmentLabel"], f"{tag} departure")
+            visits[departure_visit_index]["shipmentLabel"], f"{tag} departure"
+        )
 
       expected_tag, expected_num_rounds, expected_num_shipments = expected_group
       with self.subTest(f"group {expected_group!r}"):
@@ -204,6 +209,69 @@ class GetNumSandwichesTest(unittest.TestCase):
     )
     self.assertEqual(num_sandwiches, 2)
     self.assertSequenceEqual(bad_sandwich_tags, ("P0005",))
+
+
+class AnalyseBadSandwichesTest(unittest.TestCase):
+  """Tests for get_num_sandwiches."""
+
+  def setUp(self):
+    super().setUp()
+    self._scenario = analysis.Scenario(
+        name="moderate",
+        scenario=_SCENARIO,
+        solution=_SOLUTION,
+        parking_json=_PARKING_JSON,
+    )
+
+  def test_bad_sandwiches_v0001(self):
+    num_sandwiches, bad_sandwich_tags = analysis.analyse_bad_sandwiches(
+        self._scenario, 0
+    )
+    self.assertEqual(num_sandwiches, 2)
+    self.assertSequenceEqual(bad_sandwich_tags, ())
+
+  def test_bad_sandwiches_v0001_after_removing_time_windows(self):
+    updated_scenario = copy.deepcopy(self._scenario)
+    shipments = updated_scenario.model["shipments"]
+    for shipment in shipments:
+      pickups = shipment.get("pickups", ())
+      for pickup in pickups:
+        pickup["timeWindows"] = []
+
+      deliveries = shipment.get("deliveries", ())
+      for delivery in deliveries:
+        delivery["timeWindows"] = []
+
+    num_sandwiches, bad_sandwich_tags = analysis.analyse_bad_sandwiches(
+        updated_scenario, 0
+    )
+    self.assertEqual(num_sandwiches, 2)
+    self.assertSequenceEqual(bad_sandwich_tags, ["P0001", "P0012"])
+
+  def test_bad_sandwiches_v0008(self):
+    num_sandwiches, bad_sandwich_tags = analysis.analyse_bad_sandwiches(
+        self._scenario, 7
+    )
+    self.assertEqual(num_sandwiches, 2)
+    self.assertSequenceEqual(bad_sandwich_tags, [])
+
+  def test_bad_sandwiches_v0008_after_removing_time_windows(self):
+    updated_scenario = copy.deepcopy(self._scenario)
+    shipments = updated_scenario.model["shipments"]
+    for shipment in shipments:
+      pickups = shipment.get("pickups", ())
+      for pickup in pickups:
+        pickup["timeWindows"] = []
+
+      deliveries = shipment.get("deliveries", ())
+      for delivery in deliveries:
+        delivery["timeWindows"] = []
+
+    num_sandwiches, bad_sandwich_tags = analysis.analyse_bad_sandwiches(
+        updated_scenario, 7
+    )
+    self.assertEqual(num_sandwiches, 2)
+    self.assertSequenceEqual(bad_sandwich_tags, ["P0005", "P0002"])
 
 
 class GetParkingPartyStats(unittest.TestCase):
@@ -352,6 +420,215 @@ class VehicleShipmentGroupsTest(unittest.TestCase):
     self.assertCountEqual(
         analysis.get_vehicle_shipment_groups(model),
         (({0, 2}, {0, 1}), ({1}, {2}), ({1, 2, 3}, {3}), ({0, 1, 2, 3}, {4})),
+    )
+
+
+class GetVehicleNegativeWaitHours(unittest.TestCase):
+  """Tests for get_vehicle_negative_wait_hours."""
+
+  def test_empty_route(self):
+    route: cfr_json.ShipmentRoute = {}
+    self.assertEqual(
+        analysis.get_vehicle_negative_wait_hours(route), datetime.timedelta()
+    )
+
+  def test_no_negative_wait_duration(self):
+    route: cfr_json.ShipmentRoute = {
+        "transitions": [
+            {"waitDuration": "0s"},
+            {"waitDuration": "10s"},
+            {},
+            {"waitDuration": "30s"},
+        ]
+    }
+    self.assertEqual(
+        analysis.get_vehicle_negative_wait_hours(route), datetime.timedelta()
+    )
+
+  def test_some_negative_wait_duration(self):
+    route: cfr_json.ShipmentRoute = {
+        "transitions": [
+            {"waitDuration": "0s"},
+            {"waitDuration": "-10s"},
+            {},
+            {"waitDuration": "30s"},
+            {"waitDuration": "-110s"},
+        ]
+    }
+    self.assertEqual(
+        analysis.get_vehicle_negative_wait_hours(route),
+        datetime.timedelta(seconds=120),
+    )
+
+
+class GetVisitTurnAnglesTest(unittest.TestCase):
+  """Tests for get_visit_turn_angles."""
+
+  _MODEL: cfr_json.ShipmentModel = {
+      "shipments": [
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "A"}}]},
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "B"}}]},
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "B"}}]},
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "C"}}]},
+      ]
+  }
+
+  def test_empty_route(self):
+    route = {}
+    self.assertSequenceEqual(
+        tuple(analysis.get_visit_turn_angles(self._MODEL, route)), ()
+    )
+
+  def test_no_polylines(self):
+    route = {"visits": [{}, {}], "transitions": [{}, {}, {}]}
+    self.assertSequenceEqual(
+        tuple(analysis.get_visit_turn_angles(self._MODEL, route)), ()
+    )
+
+  def test_some_polylines(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [
+            {"shipmentIndex": 0},
+            {"shipmentIndex": 1},
+            {"shipmentIndex": 2},
+            {"shipmentIndex": 3},
+        ],
+        "transitions": [
+            {"routePolyline": {"points": "uuiiHqneMiBE"}},
+            {},
+            {},
+            {"routePolyline": {"points": "_yiiHwneMAqL??hCoA"}},
+            {"routePolyline": {"points": "wtiiHy~eMgCpABbLhBJ"}},
+        ],
+    }
+    self.assertSequenceEqual(
+        tuple(analysis.get_visit_turn_angles(self._MODEL, route)),
+        (
+            analysis.VisitTurnAngle(
+                route_index=0, visit_index=0, angle_degrees=86.49626572275521
+            ),
+            analysis.VisitTurnAngle(
+                route_index=0, visit_index=3, angle_degrees=179.01379924226057
+            ),
+        ),
+    )
+
+
+class GetVisitWarpDistancesTest(unittest.TestCase):
+  """Tests for get_visit_warp_distances."""
+
+  maxDiff = None
+
+  _MODEL: cfr_json.ShipmentModel = {
+      "shipments": [
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "A"}}]},
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "B"}}]},
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "B"}}]},
+          {"deliveries": [{"arrivalWaypoint": {"placeId": "C"}}]},
+          {
+              "deliveries": [{
+                  "arrivalWaypoint": {"placeId": "D"},
+                  "departureWaypoint": {"placeId": "E"},
+              }]
+          },
+      ]
+  }
+
+  def test_empty_route(self):
+    route = {}
+    self.assertSequenceEqual(
+        tuple(analysis.get_visit_warp_distances(self._MODEL, route)), ()
+    )
+
+  def test_no_polylines(self):
+    route = {"visits": [{}, {}], "transitions": [{}, {}, {}]}
+    self.assertSequenceEqual(
+        tuple(analysis.get_visit_warp_distances(self._MODEL, route)), ()
+    )
+
+  def test_some_polylines(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [
+            {"shipmentIndex": 0},
+            {"shipmentIndex": 1},
+            {"shipmentIndex": 2},
+            {"shipmentIndex": 3},
+        ],
+        "transitions": [
+            {"routePolyline": {"points": "suiiHuneMiAC"}},
+            {},
+            {},
+            {"routePolyline": {"points": "}xiiHkpeMA}J"}},
+            {"routePolyline": {"points": "yxiiHs|eMdCiAp@lOkAE"}},
+        ],
+    }
+    self.assertSequenceEqual(
+        tuple(analysis.get_visit_warp_distances(self._MODEL, route)),
+        (
+            analysis.VisitWarpDistance(
+                route_index=0,
+                visit_index=0,
+                warp_distance_meters=25.509699244251824,
+                arrival_latlng={"latitude": 48.87951, "longitude": 2.32701},
+                departure_latlng={"latitude": 48.87967, "longitude": 2.32726},
+            ),
+            analysis.VisitWarpDistance(
+                route_index=0,
+                visit_index=3,
+                warp_distance_meters=4.949812034551638,
+                arrival_latlng={"latitude": 48.87968, "longitude": 2.32917},
+                departure_latlng={"latitude": 48.87965, "longitude": 2.32922},
+            ),
+        ),
+    )
+    self.assertSequenceEqual(
+        tuple(
+            analysis.get_visit_warp_distances(
+                self._MODEL, route, threshold_meters=5
+            )
+        ),
+        (
+            analysis.VisitWarpDistance(
+                route_index=0,
+                visit_index=0,
+                warp_distance_meters=25.509699244251824,
+                arrival_latlng={"latitude": 48.87951, "longitude": 2.32701},
+                departure_latlng={"latitude": 48.87967, "longitude": 2.32726},
+            ),
+        ),
+    )
+
+  def test_separate_departure_and_arrival(self):
+    route: cfr_json.ShipmentRoute = {
+        "visits": [
+            {"shipmentIndex": 0},
+            {"shipmentIndex": 4},
+            {"shipmentIndex": 3},
+        ],
+        "transitions": [
+            {},
+            # Last coordinate of the polyline: 48.87880, 2.32760.
+            {"routePolyline": {"points": "qtiiHi~eMP~ENxC"}},
+            # First coordinate of the polyline: 48.87918, 2.32699. Distance from
+            # the previous polyline: 61,44m.
+            {"routePolyline": {"points": "{uiiHuneMaBMCsH"}},
+            {"routePolyline": {"points": "ayiiHkyeM?qBjCy@JdC"}},
+        ],
+    }
+    self.assertEqual(
+        tuple(analysis.get_visit_warp_distances(self._MODEL, route)),
+        (
+            # Visit #1 has a significant distance between the arrival and
+            # departure coordinates, but it is not reported because there are
+            # explicitly different arrival and departure waypoints.
+            analysis.VisitWarpDistance(
+                route_index=0,
+                visit_index=2,
+                warp_distance_meters=7.312715908574908,
+                arrival_latlng={"latitude": 48.87969, "longitude": 2.3286},
+                departure_latlng={"latitude": 48.87969, "longitude": 2.3287},
+            ),
+        ),
     )
 
 

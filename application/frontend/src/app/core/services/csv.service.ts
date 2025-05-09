@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
@@ -20,7 +27,7 @@ import {
   ILatLng,
   IShipment,
   IVehicle,
-  IVehicleOperator,
+  TravelMode,
   ValidationErrorResponse,
 } from '../models';
 import { FileService } from './file.service';
@@ -173,14 +180,6 @@ export class CsvService {
     return unparse(data.map((row) => omit(row, filterFields)));
   }
 
-  downloadVehicleOperatorsSample(): void {
-    this.http
-      .get('./assets/vehicleOperatorsSample.csv', { responseType: 'text' })
-      .subscribe((content) =>
-        this.fileService.download('vehicleOperatorsSample.csv', [content], 'text/csv')
-      );
-  }
-
   getCsvPreview(file: File, n: number): Observable<any> {
     return new Observable((observer) => {
       parse(file, {
@@ -258,12 +257,21 @@ export class CsvService {
     return errors;
   }
 
-  csvToVehicles(csvVehicles: any[], mapping: { [key: string]: string }): IVehicle[] {
+  csvToVehicles(
+    csvVehicles: any[],
+    mapping: { [key: string]: string }
+  ): { vehicle: IVehicle; errors: ValidationErrorResponse[] }[] {
     return csvVehicles.map((vehicle) => {
       // Conditionally add each field to the vehicle object, converting from csv strings as needed
       const parsedVehicle = {
         ...this.mapKeyToModelValue('label', 'Label', vehicle, mapping),
-        ...this.mapKeyToModelValue('travelMode', 'TravelMode', vehicle, mapping),
+        ...this.mapKeyToModelValue(
+          'travelMode',
+          'TravelMode',
+          vehicle,
+          mapping,
+          this.parseTravelMode
+        ),
         ...this.mapKeyToModelValue('unloadingPolicy', 'UnloadingPolicy', vehicle, mapping),
         ...this.mapKeyToModelValue('startWaypoint', 'StartWaypoint', vehicle, mapping),
         ...this.mapKeyToModelValue('endWaypoint', 'EndWaypoint', vehicle, mapping),
@@ -297,27 +305,42 @@ export class CsvService {
           mapping,
           parseFloat
         ),
-        ...this.mapToVehicleOperatorTypes(vehicle, mapping),
         ...this.mapToLoadLimits(vehicle, mapping),
         ...this.mapToVehicleTimeWindows(vehicle, mapping),
       };
-      return parsedVehicle;
+      return {
+        vehicle: parsedVehicle,
+        errors: this.validateVehicle(parsedVehicle),
+      };
     });
   }
 
-  csvToVehicleOperators(
-    csvVehicleOperators: any[],
-    mapping: { [key: string]: string }
-  ): IVehicleOperator[] {
-    return csvVehicleOperators.map((vehicleOperator) => {
-      // Conditionally add each field to the vehicle object, converting from csv strings as needed
-      const parsedVehicleOperator = {
-        ...this.mapKeyToModelValue('label', 'Label', vehicleOperator, mapping),
-        ...this.mapKeyToModelValue('type', 'Type', vehicleOperator, mapping),
-        ...this.mapToVehicleOperatorTimeWindows(vehicleOperator, mapping),
-      };
-      return parsedVehicleOperator;
+  private validateVehicle(vehicle: IVehicle): ValidationErrorResponse[] {
+    const errors = [];
+
+    const loadLimitsError = Object.keys(vehicle.loadLimits).some((limitKey) => {
+      const limit = vehicle.loadLimits[limitKey];
+      const value = Number.parseFloat(limit.maxLoad as string);
+      return !Number.isInteger(value) || value < 1;
     });
+
+    if (loadLimitsError) {
+      errors.push({
+        error: true,
+        message: 'Vehicle contains invalid load limits',
+        vehicle,
+      });
+    }
+
+    if ('travelMode' in vehicle && !vehicle.travelMode) {
+      errors.push({
+        error: true,
+        message: 'Vehicle has an invalid travel mode',
+        vehicle,
+      });
+    }
+
+    return errors;
   }
 
   private mapToPickup(shipment: any, mapping: { [key: string]: string }, timeWindow: any): any {
@@ -545,56 +568,6 @@ export class CsvService {
     return timeWindows;
   }
 
-  private mapToVehicleOperatorTimeWindows(
-    vehicleOperator: any,
-    mapping: { [key: string]: string }
-  ): any {
-    const startTimeWindows = [
-      {
-        ...this.mapKeyToModelValue(
-          'startTime',
-          'StartTimeWindowStartTime',
-          vehicleOperator,
-          mapping,
-          this.timeStringToSeconds
-        ),
-        ...this.mapKeyToModelValue(
-          'endTime',
-          'StartTimeWindowEndTime',
-          vehicleOperator,
-          mapping,
-          this.timeStringToSeconds
-        ),
-      },
-    ];
-    const endTimeWindows = [
-      {
-        ...this.mapKeyToModelValue(
-          'startTime',
-          'EndTimeWindowStartTime',
-          vehicleOperator,
-          mapping,
-          this.timeStringToSeconds
-        ),
-        ...this.mapKeyToModelValue(
-          'endTime',
-          'EndTimeWindowEndTime',
-          vehicleOperator,
-          mapping,
-          this.timeStringToSeconds
-        ),
-      },
-    ];
-    const timeWindows: any = {};
-    if (Object.keys(startTimeWindows).length > 0) {
-      timeWindows.startTimeWindows = startTimeWindows;
-    }
-    if (Object.keys(endTimeWindows).length > 0) {
-      timeWindows.endTimeWindows = endTimeWindows;
-    }
-    return timeWindows;
-  }
-
   private timeStringToSeconds(timestring: string): { seconds: string } {
     try {
       const date = new Date(timestring);
@@ -602,6 +575,10 @@ export class CsvService {
     } catch {
       return null;
     }
+  }
+
+  private parseTravelMode(value: string): number {
+    return TravelMode[value.toUpperCase()];
   }
 
   // Check map has the provided mapKey and if the model object has a value for the converted key
@@ -636,20 +613,6 @@ export class CsvService {
       loadLimit[vehicle[mapping.LoadLimit4Type]] = { maxLoad: vehicle[mapping.LoadLimit4Value] };
     }
     return { loadLimits: { ...loadLimit } };
-  }
-
-  private mapToVehicleOperatorTypes(vehicle: any, mapping: { [key: string]: string }): any {
-    const vehicleOperatorType = [];
-    if (mapping.RequiredOperatorType1 && vehicle[mapping.RequiredOperatorType1]) {
-      vehicleOperatorType.push(vehicle[mapping.RequiredOperatorType1]);
-    }
-    if (mapping.RequiredOperatorType2 && vehicle[mapping.RequiredOperatorType2]) {
-      vehicleOperatorType.push(vehicle[mapping.RequiredOperatorType2]);
-    }
-    if (mapping.RequiredOperatorType3 && vehicle[mapping.RequiredOperatorType3]) {
-      vehicleOperatorType.push(vehicle[mapping.RequiredOperatorType3]);
-    }
-    return { requiredOperatorTypes: vehicleOperatorType };
   }
 
   private mapToLoadDemands(shipment: any, mapping: { [key: string]: string }): any {

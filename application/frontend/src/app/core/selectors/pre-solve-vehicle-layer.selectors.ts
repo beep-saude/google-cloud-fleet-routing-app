@@ -1,20 +1,28 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import { createSelector } from '@ngrx/store';
 import { Feature, Point } from '@turf/helpers';
 import { fromDispatcherLatLng, fromDispatcherToTurfPoint } from 'src/app/util';
 import * as fromLinearReferencing from '../../util/linear-referencing';
-import { MapVehicle, Vehicle } from '../models';
+import { MapVehicle, TravelMode, Vehicle } from '../models';
 import * as fromDepot from './depot.selectors';
-import { selectVehicleInitialHeadings } from './map.selectors';
+import { selectUsedMapLayers, selectVehicleInitialHeadings } from './map.selectors';
 import PreSolveVehicleSelectors from './pre-solve-vehicle.selectors';
+import { MapLayerId } from '../models/map';
 
 export const vehicleToDeckGL = (
   vehicle: Vehicle,
@@ -59,17 +67,24 @@ export const selectFilteredVehiclesSelected = createSelector(
   PreSolveVehicleSelectors.selectFilteredVehiclesSelected,
   selectVehicleInitialHeadings,
   fromDepot.selectDepot,
-  (vehicles, headings, depot) => {
+  selectUsedMapLayers,
+  (vehicles, headings, depot, visibleMapLayers) => {
     const selectedVehicles: MapVehicle[] = [];
-    vehicles.forEach((vehicle) => {
-      if (vehicle.startWaypoint?.location?.latLng) {
-        const position = fromDispatcherLatLng(vehicle.startWaypoint.location.latLng);
-        const atDepot = depot
-          ? fromLinearReferencing.pointsAreCoincident(position, fromDispatcherLatLng(depot))
-          : false;
-        selectedVehicles.push(vehicleToDeckGL(vehicle, position, headings[vehicle.id], atDepot));
-      }
-    });
+    vehicles
+      .filter((vehicle) =>
+        vehicle.travelMode ?? TravelMode.DRIVING
+          ? visibleMapLayers[MapLayerId.FourWheel].visible
+          : visibleMapLayers[MapLayerId.Walking].visible
+      )
+      .forEach((vehicle) => {
+        if (vehicle.startWaypoint?.location?.latLng) {
+          const position = fromDispatcherLatLng(vehicle.startWaypoint.location.latLng);
+          const atDepot = depot
+            ? fromLinearReferencing.pointsAreCoincident(position, fromDispatcherLatLng(depot))
+            : false;
+          selectedVehicles.push(vehicleToDeckGL(vehicle, position, headings[vehicle.id], atDepot));
+        }
+      });
     return selectedVehicles;
   }
 );

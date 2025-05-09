@@ -19,7 +19,9 @@ from collections.abc import Collection, Iterable, Mapping, Sequence, Set
 import datetime
 import itertools
 import logging
+import math
 from typing import TypeAlias, TypedDict
+
 
 # A duration in a string format following the protocol buffers specification in
 # https://protobuf.dev/reference/protobuf/google.protobuf/#duration
@@ -73,10 +75,25 @@ class Load(TypedDict):
   amount: Int64String
 
 
-class LoadLimit(TypedDict):
+class LoadCost(TypedDict, total=False):
+  """Represents the load costs in the JSON GMPRO request.
+
+  Note that load-based costs are supported only in GMPRO.
+  """
+
+  loadThreshold: Int64String
+  costPerUnitBelowThreshold: float
+  costPerUnitAboveThreshold: float
+
+
+class LoadLimit(TypedDict, total=False):
   """Represents the vehicle load limit in the JSON CFR request."""
 
   maxLoad: Int64String
+
+  # costPerKilometer and costPerTraveledHour are supported only by GMPRO.
+  costPerKilometer: LoadCost
+  costPerTraveledHour: LoadCost
 
 
 class Location(TypedDict, total=False):
@@ -104,6 +121,7 @@ class VisitRequest(TypedDict, total=False):
   timeWindows: list[TimeWindow]
   duration: DurationString
   cost: float
+  avoidUTurns: bool
 
   tags: list[str]
 
@@ -218,6 +236,7 @@ class Visit(TypedDict, total=False):
   detour: str
   isPickup: bool
   visitRequestIndex: int
+  injectedSolutionLocationToken: int
 
 
 class EncodedPolyline(TypedDict, total=False):
@@ -344,6 +363,46 @@ class OptimizeToursResponse(TypedDict, total=False):
 
 
 # pylint: enable=invalid-name
+
+# Conversion between meters and radians for an approximate Earth (a sphere whose
+# radius is the mean radius of the actual planet).
+EARTH_METERS_PER_RADIAN = 6371000
+EARTH_RADIANS_PER_METER = 1 / EARTH_METERS_PER_RADIAN
+
+
+def distance_meters(latlng_a: LatLng, latlng_b: LatLng) -> float:
+  """The distance between two coordinates, in meters."""
+  return EARTH_METERS_PER_RADIAN * distance_radians(latlng_a, latlng_b)
+
+
+def distance_radians(latlng_a: LatLng, latlng_b: LatLng) -> float:
+  """The angular distance between two coordinates, in radians.
+
+  Uses the simplified Haversine formula to compute the distance out of the two
+  coordinates. See https://en.wikipedia.org/wiki/Haversine_formula for more
+  details on the computation.
+
+  Args:
+    latlng_a: The first pair of coordinates.
+    latlng_b: The second pair of coordinates.
+
+  Returns:
+    The inner angle between the two pairs of coordinates.
+  """
+  lat_a = math.pi * latlng_a["latitude"] / 180
+  lng_a = math.pi * latlng_a["longitude"] / 180
+  lat_b = math.pi * latlng_b["latitude"] / 180
+  lng_b = math.pi * latlng_b["longitude"] / 180
+
+  inner = math.sqrt(
+      0.5
+      * (
+          1
+          - math.cos(lat_b - lat_a)
+          + math.cos(lat_a) * math.cos(lat_b) * (1 - math.cos(lng_b - lng_a))
+      )
+  )
+  return 2 * math.asin(max(-1, min(inner, 1)))
 
 
 def combined_penalty_cost(
@@ -525,6 +584,57 @@ def get_visits(route: ShipmentRoute) -> Sequence[Visit]:
 def get_transitions(route: ShipmentRoute) -> Sequence[Transition]:
   """Returns the list of transitions on a route or an empty sequence."""
   return route.get("transitions", ())
+
+
+def get_arrival_waypoint(visit_request: VisitRequest) -> Waypoint | None:
+  """Returns the explicit arrival location or waypoint of a visit request.
+
+  The information is taken from `arrivalLocation` or `arrivalWaypoint`,
+  depending on which one is available. In the former case, returns a new
+  `Waypoint` object that represents the same information.
+
+  Args:
+    visit_request: The visit request.
+
+  Returns:
+    The arrival waypoint. None, if there is neither arrival location nor arrival
+    waypoint is specified explicitly.
+  """
+  if (latlng := visit_request.get("arrivalLocation")) is not None:
+    return {"location": {"latLng": latlng}}
+  return visit_request.get("arrivalWaypoint")
+
+
+def get_departure_waypoint(visit_request: VisitRequest) -> Waypoint | None:
+  """Returns the explicit departure location or waypoint of a visit request.
+
+  The information is taken from `departureLocation` or `departureWaypoint`,
+  depending on which one is available. In the former case, returns a new
+  `Waypoint` object that represents the same information.
+
+  Args:
+    visit_request: The visit request.
+
+  Returns:
+    The departure waypoint. None, if there is departure arrival location nor
+    departure waypoint is specified explicitly.
+  """
+  if (latlng := visit_request.get("departureLocation")) is not None:
+    return {"location": {"latLng": latlng}}
+  return visit_request.get("departureWaypoint")
+
+
+def has_different_arrival_and_departure_waypoints(
+    visit_request: VisitRequest,
+) -> bool:
+  """Returns True when arrival and departure location of a visit are different."""
+  arrival_waypoint = get_arrival_waypoint(visit_request)
+  departure_waypoint = get_departure_waypoint(visit_request)
+  return (
+      arrival_waypoint is not None
+      and departure_waypoint is not None
+      and arrival_waypoint != departure_waypoint
+  )
 
 
 def get_break_earliest_start_time(
@@ -1501,6 +1611,82 @@ def merge_polylines_from_transitions(
   if not merged_points:
     return None
   return {"points": encode_polyline(merged_points)}
+
+
+def _polyline_has_different_points(encoded_polyline: str) -> bool:
+  """Returns True when encoded_polyline has at least two different points."""
+  polyline = decode_polyline(encoded_polyline)
+  if len(polyline) < 2:
+    return False
+  start = polyline[0]
+  for i in range(1, len(polyline)):
+    if polyline[i] != start:
+      return True
+  return False
+
+
+def get_adjacent_encoded_polyline(
+    model: ShipmentModel,
+    route: ShipmentRoute,
+    visit_index: int,
+    inbound: bool,
+    allow_single_point: bool = True,
+) -> tuple[int, str | None]:
+  """Returns the inbound (resp. outbound) polyline for the given visit.
+
+  When there are multiple visits at the same coordinates or when two visits do
+  not have a polyline in the transition between them, continues the search for
+  the polyline at the previous (resp. following) visits, until the start (resp.
+  the end) of the route.
+
+  Makes no attempt to detect the case when the route is just missing the
+  polylines at all. In such case, always returns None.
+
+  Args:
+    model: The source model for the route.
+    route: The route in which the inbound transition is looked up.
+    visit_index: The index of the visit for which we're looking up the inbound
+      (resp. outbound) transition.
+    inbound: When True, returns an inbound polyline. Otherwise, returns an
+      outbound polyline.
+    allow_single_point: When True, returns a polyline that has at least one
+      point; otherwise, polylines with exactly one point are treated as no
+      polyline and the search continues until it finds a polyline with at least
+      two points.
+
+  Returns:
+    A tuple (visit_index, encoded_polyline) where visit_index is the index of
+    the visit at which this polyline was obtained, and encoded_polyline is
+    either the encoded polyline starting at this visit index or None when there
+    is no polyline to return (either visit_index is at the start/end of the
+    route or it has different arrival and departure waypoints).
+
+  Raises:
+    ValueError: When a transition is missing a polyline.
+  """
+  visits = get_visits(route)
+  transitions = get_transitions(route)
+  num_visits = len(visits)
+  loop_increment = -1 if inbound else 1
+  transition_offset = 0 if inbound else 1
+  while True:
+    transition = transitions[visit_index + transition_offset]
+    route_polyline = transition.get("routePolyline")
+    points = None if route_polyline is None else route_polyline.get("points")
+    if points:  # Accept non-empty strings only.
+      if allow_single_point or _polyline_has_different_points(points):
+        return visit_index, points
+
+    visit_index += loop_increment
+    if visit_index < 0 or visit_index >= num_visits:
+      return visit_index - loop_increment, None
+
+    # If the visit request has distinct arrival and departure waypoints, stop
+    # the search since this creates an intentional warping.
+    if has_different_arrival_and_departure_waypoints(
+        get_visit_request(model, visits[visit_index])
+    ):
+      return visit_index, None
 
 
 def make_optional_time_window(

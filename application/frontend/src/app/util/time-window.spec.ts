@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import { formatDate } from '@angular/common';
 import Long from 'long';
@@ -282,14 +289,14 @@ describe('time windows util', () => {
     it('should format time window duration', () => {
       expect(formatTimeWindowDuration([Long.fromNumber(0), Long.fromNumber(3600)])).toEqual({
         startDate: formatDate(0, 'yyyy/MM/dd', 'en-us', 'UTC'),
-        startTime: '12:00am',
-        endTime: '1:00am',
+        startTime: '12:00 am',
+        endTime: '1:00 am',
       });
       expect(formatTimeWindowDuration([Long.fromNumber(0), Long.fromNumber(90000)])).toEqual({
         startDate: formatDate(0, 'yyyy/MM/dd', 'en-us', 'UTC'),
-        startTime: '12:00am',
+        startTime: '12:00 am',
         endDate: formatDate(new Date(90000 * 1000), 'yyyy/MM/dd', 'en-us', 'UTC'),
-        endTime: '1:00am',
+        endTime: '1:00 am',
       });
     });
   });

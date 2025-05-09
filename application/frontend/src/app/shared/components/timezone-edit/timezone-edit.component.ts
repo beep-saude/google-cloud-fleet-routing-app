@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import {
   ChangeDetectionStrategy,
@@ -16,7 +23,7 @@ import {
   Output,
   SimpleChanges,
 } from '@angular/core';
-import { FormControl } from '@angular/forms';
+import { UntypedFormControl } from '@angular/forms';
 import { Observable } from 'rxjs';
 import { map, startWith } from 'rxjs/operators';
 import { Timezone, utcTimezones } from '../../models';
@@ -32,15 +39,9 @@ export class TimezoneEditComponent implements OnChanges {
   @Input() currentTimezone: Timezone;
   @Output() timezoneSelected = new EventEmitter<Timezone>();
 
-  filteredOptions: Observable<string[]>;
+  filteredOptions: Observable<Timezone[]>;
 
-  selectedTimezone: Timezone;
-  timezones: { timezone: Timezone; formattedLabel: string }[];
-  formControl = new FormControl();
-
-  constructor() {
-    this.buildTimezoneLabels();
-  }
+  formControl = new UntypedFormControl();
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes.currentTimezone) {
@@ -50,50 +51,41 @@ export class TimezoneEditComponent implements OnChanges {
 
   initializeCurrentTimezone(): void {
     this.formControl.setValue(
-      this.timezones[this.getMatchingTimezoneIndex(this.currentTimezone)].formattedLabel
+      utcTimezones[this.getMatchingTimezoneIndex(this.currentTimezone)].description
     );
 
     this.filteredOptions = this.formControl.valueChanges.pipe(
-      startWith(this.timezones[this.getMatchingTimezoneIndex(this.currentTimezone)].formattedLabel),
-      map((value) => this.filterTimezones(value))
+      startWith(utcTimezones[this.getMatchingTimezoneIndex(this.currentTimezone)].description),
+      map((value) =>
+        this.filterTimezones(value).sort((a, b) => (a.description < b.description ? -1 : 1))
+      )
     );
   }
 
-  buildTimezoneLabels(): void {
-    this.timezones = utcTimezones.map((tz) => ({
-      timezone: tz,
-      formattedLabel: `(UTC${tz.label}) ${tz.description}`,
-    }));
-  }
-
   getMatchingTimezoneIndex(timezone: Timezone): number {
-    return this.timezones.findIndex(
+    return utcTimezones.findIndex(
       (tz) =>
-        tz.timezone.label === timezone.label &&
-        tz.timezone.offset === timezone.offset &&
-        tz.timezone.description === timezone.description
+        tz.label === timezone.label &&
+        tz.offset === timezone.offset &&
+        tz.description === timezone.description
     );
   }
 
   getTimezoneByLabel(label: string): Timezone {
-    const index = this.timezones.findIndex((tz) => tz.formattedLabel === label);
-    return this.timezones[index].timezone;
+    const index = utcTimezones.findIndex((tz) => tz.description === label);
+    return utcTimezones[index];
   }
 
   onTimezoneSelected(value: string): void {
-    this.selectedTimezone = this.getTimezoneByLabel(value);
-    this.timezoneSelected.emit(this.selectedTimezone);
+    this.timezoneSelected.emit(this.getTimezoneByLabel(value));
   }
 
-  displayTimezone(timezone: Timezone): string {
-    return timezone ? `(UTC${timezone.label}) ${timezone.description}` : '';
-  }
-
-  private filterTimezones(value = ''): string[] {
+  private filterTimezones(value = ''): Timezone[] {
     const filterValue = value.toLowerCase();
-
-    return this.timezones
-      .filter((tz) => tz.formattedLabel.toLowerCase().includes(filterValue))
-      .map((tz) => tz.formattedLabel);
+    return utcTimezones.filter(
+      (tz) =>
+        tz.description.toLowerCase().includes(filterValue) ||
+        tz.label.toLowerCase().includes(filterValue)
+    );
   }
 }

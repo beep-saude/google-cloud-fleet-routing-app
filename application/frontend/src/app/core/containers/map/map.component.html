@@ -1,5 +1,15 @@
 <app-map-wrapper [options]="options$ | async" (mapInitialize)="onMapInitialize($event)">
 </app-map-wrapper>
+<div class="map-controls">
+  <app-post-solve-map-legend
+    [mapLayers]="layers$ | async"
+    (setLayerVisibility)="onSetLayerVisibility($event)">
+  </app-post-solve-map-legend>
+  <app-map-add-buttons
+    *ngIf="isPreSolve()"
+    (addShipment)="addShipment()"
+    (addVehicle)="addVehicle()"></app-map-add-buttons>
+</div>
 <app-map-type-button (typeChange)="onTypeChange($event)"> </app-map-type-button>
 <app-toggle-selection-filter-button
   *ngIf="mapSelectionToolsVisible$ | async"
@@ -10,5 +20,5 @@
   *ngIf="mapSelectionToolsVisible$ | async"
   (activeChange)="onToggleSelectMapItems($event)">
 </app-select-map-items-button>
-<app-hide-map-button (hideMap)="onHideMap()"></app-hide-map-button>
 <app-zoom-home-button (zoomToHome)="onZoomToHome()" [disabled]="!bounds"></app-zoom-home-button>
+<app-travel-simulator *ngIf="travelSimulatorVisible$ | async"></app-travel-simulator>

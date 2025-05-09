@@ -54,14 +54,17 @@ On a high level, the solver does the following:
 """
 
 import collections
-from collections.abc import Collection, Iterable, Mapping, MutableMapping, Sequence, Set
+from collections.abc import Collection, Mapping, MutableMapping, Sequence, Set
 import copy
 import dataclasses
 import datetime
 import logging
 import re
-from typing import Any, TypeAlias, TypeVar
+from typing import TypeAlias, TypeVar
 
+from . import _global_model
+from . import _local_model
+from . import _merged_model
 from . import _parking
 from . import _shared
 from ..json import cfr_json
@@ -222,19 +225,19 @@ class Planner:
       # Add one virtual vehicle for each shipment. This way, we can be sure that
       # there are never any skipped shipments in the local model, as long as
       # each shipment is feasible in isolation.
-      vehicle_label = _make_local_model_vehicle_label(parking_key)
+      vehicle_label = _local_model.make_vehicle_label(parking_key)
       group_vehicle_indices = []
       for round_index in range(num_shipments):
         group_vehicle_indices.append(len(local_vehicles))
         local_vehicles.append(
-            _make_local_model_vehicle(
+            _local_model.make_vehicle(
                 self._options, parking, f"{vehicle_label}/{round_index}"
             )
         )
 
       for shipment_index in group_shipment_indices:
         original_shipment = self._shipments[shipment_index]
-        local_shipment = _make_local_model_shipment(
+        local_shipment = _local_model.make_shipment(
             shipment_index,
             original_shipment,
             parking,
@@ -251,7 +254,10 @@ class Planner:
         "label": self._request.get("label", "") + "/local",
         "model": local_model,
     }
-    self._add_options_from_original_request(request)
+    _shared.copy_shared_options(from_request=self._request, to_request=request)
+    internal_parameters = self._options.local_internal_parameters
+    if internal_parameters is not None:
+      request["internalParameters"] = internal_parameters
     return request
 
   def make_global_request(
@@ -317,9 +323,9 @@ class Planner:
         # number of required vehicles, and is very likely to oversupply.
         continue
 
-      parking_tag = _get_parking_tag_from_local_route(route)
+      parking_tag = _local_model.get_parking_tag_from_route(route)
       global_shipments.append(
-          _make_global_model_shipment_for_local_route(
+          _global_model.make_shipment_for_local_route(
               model=self._model,
               local_route_index=route_index,
               local_route=route,
@@ -337,19 +343,18 @@ class Planner:
         "label": self._request.get("label", "") + "/global",
         "model": global_model,
     }
-    self._add_options_from_original_request(request)
+    _shared.copy_shared_options(from_request=self._request, to_request=request)
     if consider_road_traffic_override is not None:
       request["considerRoadTraffic"] = consider_road_traffic_override
     else:
       consider_road_traffic = self._request.get("considerRoadTraffic")
       if consider_road_traffic is not None:
         request["considerRoadTraffic"] = consider_road_traffic
-    # TODO(ondrasej): Consider applying internal parameters also to the local
-    # request; potentially, add separate internal parameters for the local and
-    # the global models to the configuration of the planner.
-    internal_parameters = self._request.get("internalParameters")
-    if internal_parameters is not None:
-      request["internalParameters"] = internal_parameters
+    _shared.override_internal_parameters(
+        request,
+        self._request.get("internalParameters"),
+        self._options.global_internal_parameters,
+    )
     return request
 
   def make_local_refinement_request(
@@ -436,7 +441,7 @@ class Planner:
           f" size:{consecutive_visit_sequence.num_global_visits}"
           f" parking:{consecutive_visit_sequence.parking_tag}"
       )
-      refinement_vehicle = _make_local_model_vehicle(
+      refinement_vehicle = _local_model.make_vehicle(
           self._options, parking, refinement_vehicle_label
       )
 
@@ -507,7 +512,7 @@ class Planner:
           # There are two visits for each shipment; only add the shipment to the
           # refinement model once.
           if refinement_shipment_index is None:
-            refinement_shipment = _make_local_model_shipment(
+            refinement_shipment = _local_model.make_shipment(
                 shipment_index,
                 original_shipment,
                 parking,
@@ -546,7 +551,12 @@ class Planner:
         "model": refinement_model,
         "injectedFirstSolutionRoutes": refinement_injected_routes,
     }
-    self._add_options_from_original_request(request)
+    _shared.copy_shared_options(from_request=self._request, to_request=request)
+    _shared.override_internal_parameters(
+        request,
+        self._options.local_internal_parameters,
+        self._options.local_refinement_internal_parameters,
+    )
     return request
 
   def integrate_local_refinement(
@@ -677,441 +687,12 @@ class Planner:
       mutating it is needed, first make a copy via copy.deepcopy().
     """
 
-    # The shipments in the merged request consist of all shipments in the
-    # original request + virtual shipments to handle parking location visits. We
-    # preserve the shipment indices from the original request, and add all the
-    # virtual shipments at the end.
-    merged_shipments: list[cfr_json.Shipment] = copy.copy(self._shipments)
-    merged_model: cfr_json.ShipmentModel = {
-        # The start and end time remain unchanged.
-        "globalStartTime": self._model["globalStartTime"],
-        "globalEndTime": self._model["globalEndTime"],
-        "shipments": merged_shipments,
-        # The vehicles in the merged model are the vehicles from the global
-        # model and from the local model. This preserves vehicle indices from
-        # the original request.
-        "vehicles": self._model["vehicles"],
-    }
-    merged_request: cfr_json.OptimizeToursRequest = {
-        "model": merged_model,
-        "label": self._request.get("label", "") + "/merged",
-    }
-    if (parent := self._request.get("parent")) is not None:
-      merged_request["parent"] = parent
-
-    merged_routes: list[cfr_json.ShipmentRoute] = []
-    merged_result: cfr_json.OptimizeToursResponse = {
-        "routes": merged_routes,
-    }
-
-    transition_attributes = self._model.get("transitionAttributes")
-    if transition_attributes is not None:
-      merged_model["transitionAttributes"] = transition_attributes
-
-    local_routes = cfr_json.get_routes(local_response)
-    global_routes = cfr_json.get_routes(global_response)
-    populate_polylines = self._request.get("populatePolylines", False)
-
-    # We defined merged_transitions, merged_travel_steps, and
-    # add_merged_transition outside of the loop to avoid a lint warning (and to
-    # avoid redefining the function for each iteration of the loop).
-    merged_transitions = None
-    merged_travel_steps: list[cfr_json.TravelStep] | None = None
-
-    use_deprecated_fields = self._options.use_deprecated_fields
-
-    def add_merged_transition(
-        transition: cfr_json.Transition,
-        travel_step: cfr_json.TravelStep | None,
-        at_parking: ParkingLocation | None = None,
-        vehicle: cfr_json.Vehicle | None = None,
-    ):
-      assert (at_parking is None) != (vehicle is None)
-      assert merged_transitions is not None
-      assert use_deprecated_fields == (merged_travel_steps is not None)
-
-      if self._options.travel_mode_in_merged_transitions:
-        if at_parking is not None:
-          transition["travelMode"] = at_parking.travel_mode
-          transition["travelDurationMultiple"] = (
-              at_parking.travel_duration_multiple
-          )
-        if vehicle is not None:
-          transition["travelMode"] = vehicle.get("travelMode", 0)
-          transition["travelDurationMultiple"] = vehicle.get(
-              "travelDurationMultiple", 1
-          )
-      merged_transitions.append(transition)
-      if merged_travel_steps is not None:
-        merged_travel_steps.append(travel_step)
-
-    for global_route_index, global_route in enumerate(global_routes):
-      global_visits = cfr_json.get_visits(global_route)
-      global_vehicle = self._vehicles[global_route_index]
-      if not global_visits:
-        # This is an unused vehicle in the global model. We can just copy the
-        # route as is.
-        merged_routes.append(global_route)
-        continue
-
-      global_transitions = global_route["transitions"]
-      global_travel_steps = (
-          global_route["travelSteps"] if use_deprecated_fields else None
-      )
-      merged_visits: list[cfr_json.Visit] = []
-      merged_transitions: list[cfr_json.Transition] = []
-      merged_route: cfr_json.ShipmentRoute = {
-          "routeTotalCost": global_route["routeTotalCost"],
-          "transitions": merged_transitions,
-          "vehicleEndTime": global_route["vehicleEndTime"],
-          "vehicleIndex": global_route.get("vehicleIndex", 0),
-          "vehicleLabel": global_route["vehicleLabel"],
-          "vehicleStartTime": global_route["vehicleStartTime"],
-          "visits": merged_visits,
-          # TODO(ondrasej): metrics, detailed costs, ...
-      }
-      if use_deprecated_fields:
-        merged_travel_steps = []
-        merged_route["travelSteps"] = merged_travel_steps
-
-      # Copy breaks from the global route, if present.
-      if (global_breaks := global_route.get("breaks")) is not None:
-        merged_route["breaks"] = global_breaks
-
-      # Copy vehicle detour from the global route, if present.
-      if (
-          self._options.use_deprecated_fields
-          and (global_detour := global_route.get("vehicleDetour")) is not None
-      ):
-        merged_route["vehicleDetour"] = global_detour
-
-      merged_routes.append(merged_route)
-
-      def add_parking_location_shipment(
-          parking: ParkingLocation, arrival: bool
-      ):
-        arrival_or_departure = "arrival" if arrival else "departure"
-        shipment_index = len(merged_shipments)
-        shipment: cfr_json.Shipment = {
-            "label": f"{parking.tag} {arrival_or_departure}",
-            "deliveries": [{
-                "arrivalWaypoint": parking.waypoint_for_local_model,
-                "duration": "0s",
-            }],
-            # TODO(ondrasej): Vehicle costs and allowed vehicle indices.
-        }
-        merged_shipments.append(shipment)
-        return shipment_index, shipment
-
-      for global_visit_index, global_visit in enumerate(global_visits):
-        # The transition from the previous global visit to the current one is
-        # always by vehicle.
-        add_merged_transition(
-            copy.deepcopy(global_transitions[global_visit_index]),
-            copy.deepcopy(global_travel_steps[global_visit_index])
-            if use_deprecated_fields
-            else None,
-            vehicle=global_vehicle,
-        )
-        global_visit_label = global_visit["shipmentLabel"]
-        global_visit_detour = cfr_json.get_visit_detour(global_visit)
-        visit_type, index = _parse_global_shipment_label(global_visit_label)
-        match visit_type:
-          case "s":
-            # This is direct delivery of one of the shipments in the original
-            # request. We just copy it and update the shipment index and label
-            # accordingly.
-            merged_visit = copy.deepcopy(global_visit)
-            merged_visit["shipmentIndex"] = index
-            merged_visit["shipmentLabel"] = self._shipments[index]["label"]
-            merged_visits.append(merged_visit)
-          case "p":
-            # This is delivery through a parking location. We need to copy parts
-            # of the route from the local model solution, and add virtual
-            # shipments for entering and leaving the parking location.
-            local_route = local_routes[index]
-            parking_tag = _get_parking_tag_from_local_route(local_route)
-            parking = self._parking_locations[parking_tag]
-            arrival_shipment_index, arrival_shipment = (
-                add_parking_location_shipment(parking, arrival=True)
-            )
-            global_start_time = cfr_json.parse_time_string(
-                global_visit["startTime"]
-            )
-            local_start_time = cfr_json.parse_time_string(
-                local_route["vehicleStartTime"]
-            )
-            local_end_time = cfr_json.parse_time_string(
-                local_route["vehicleEndTime"]
-            )
-            local_to_global_delta = global_start_time - local_start_time
-            merged_visits.append({
-                "shipmentIndex": arrival_shipment_index,
-                "shipmentLabel": arrival_shipment["label"],
-                "startTime": global_visit["startTime"],
-                # NOTE(ondrasej): The detour of the parking arrival visit is the
-                # difference from a plan where the vehicle drives directly to
-                # this parking location.
-                "detour": cfr_json.as_duration_string(global_visit_detour),
-            })
-
-            # Transfer all visits and transitions from the local route. Update
-            # the timestamps as needed.
-            local_visits = cfr_json.get_visits(local_route)
-            local_transitions = local_route["transitions"]
-            local_travel_steps = (
-                local_route["travelSteps"] if use_deprecated_fields else None
-            )
-            previous_visit_was_to_parking = True
-            unload_duration = datetime.timedelta()
-            load_duration = datetime.timedelta()
-            for local_visit_index, local_visit in enumerate(local_visits):
-              shipment_index = _get_shipment_index_from_local_route_visit(
-                  local_visit
-              )
-              shipment = self._shipments[shipment_index]
-              current_visit_is_to_parking = _local_route_visit_is_to_parking(
-                  local_visit, shipment=shipment
-              )
-
-              local_transition_in = local_transitions[local_visit_index]
-
-              if (
-                  previous_visit_was_to_parking
-                  and not current_visit_is_to_parking
-              ):
-                # The current visit is the first visit on the local route that
-                # is not at the parking location. We can compute the unload
-                # duration as the duration between the start of the transition
-                # to this visit and the start of the local route.
-                unload_duration = (
-                    cfr_json.parse_time_string(local_transition_in["startTime"])
-                    - local_start_time
-                )
-              if (
-                  not previous_visit_was_to_parking
-                  and current_visit_is_to_parking
-              ):
-                # The current visit is the first visit back at the parking
-                # location. We can compute the load duration as the duration
-                # between the start of the local visit and the end of the local
-                # route.
-                load_duration = local_end_time - cfr_json.parse_time_string(
-                    local_visit["startTime"]
-                )
-
-              if (
-                  not previous_visit_was_to_parking
-                  or not current_visit_is_to_parking
-              ):
-                # We drop the local pickups in the merged model, keeping only
-                # the visits to customer locations. We need to preserve
-                # transitions between these visits, but also between parking and
-                # the first/last visit to the customer location.
-                merged_transition = copy.deepcopy(local_transition_in)
-                merged_transition["startTime"] = cfr_json.update_time_string(
-                    merged_transition["startTime"], local_to_global_delta
-                )
-                merged_travel_step = None
-                if use_deprecated_fields:
-                  merged_travel_step = copy.deepcopy(
-                      local_travel_steps[local_visit_index]
-                  )
-                add_merged_transition(
-                    merged_transition, merged_travel_step, at_parking=parking
-                )
-
-              previous_visit_was_to_parking = current_visit_is_to_parking
-              if current_visit_is_to_parking:
-                # This is a pickup or a delivery at the parking location. We do
-                # not carry it over, because the shipments in the original
-                # request are either pickup-only or delivery-only.
-                continue
-
-              local_visit_detour = cfr_json.get_visit_detour(local_visit)
-              merged_visit: cfr_json.Visit = {
-                  "shipmentIndex": shipment_index,
-                  "startTime": cfr_json.update_time_string(
-                      local_visit["startTime"], local_to_global_delta
-                  ),
-                  # NOTE(ondrasej): The computation of the detour works with the
-                  # assumption that all visits on the local route are for
-                  # delivery-only shipments. The sum of the local and global
-                  # detours is equivalent to the detour from a route where the
-                  # vehicle drivers straight to the current parking location and
-                  # where the driver then goes directly to this visit.
-                  "detour": cfr_json.as_duration_string(
-                      global_visit_detour + local_visit_detour
-                  ),
-              }
-              if (shipment_label := shipment.get("label")) is not None:
-                merged_visit["shipmentLabel"] = shipment_label
-              if (is_pickup := local_visit.get("isPickup")) is not None:
-                merged_visit["isPickup"] = is_pickup
-              if (
-                  visit_request_index := local_visit.get("visitRequestIndex")
-              ) is not None:
-                merged_visit["visitRequestIndex"] = visit_request_index
-              merged_visits.append(merged_visit)
-
-            # Add a transition back to the parking location if needed, i.e. only
-            # if it was not already added with the last visit to a customer
-            # location.
-            if not previous_visit_was_to_parking:
-              transition_to_parking = copy.deepcopy(local_transitions[-1])
-              transition_to_parking["startTime"] = cfr_json.update_time_string(
-                  transition_to_parking["startTime"], local_to_global_delta
-              )
-              travel_step_to_parking = None
-              if use_deprecated_fields:
-                travel_step_to_parking = copy.deepcopy(local_travel_steps[-1])
-              add_merged_transition(
-                  transition_to_parking,
-                  travel_step_to_parking,
-                  at_parking=parking,
-              )
-
-            # Add a virtual shipment and a visit for the departure from the
-            # parking location.
-            departure_shipment_index, departure_shipment = (
-                add_parking_location_shipment(parking, arrival=False)
-            )
-
-            arrival_shipment["deliveries"][0]["duration"] = (
-                cfr_json.as_duration_string(unload_duration)
-            )
-            departure_shipment["deliveries"][0]["duration"] = (
-                cfr_json.as_duration_string(load_duration)
-            )
-
-            local_route_duration = cfr_json.parse_duration_string(
-                local_route["metrics"]["totalDuration"]
-            )
-            merged_visits.append({
-                "shipmentIndex": departure_shipment_index,
-                "shipmentLabel": departure_shipment["label"],
-                "startTime": cfr_json.update_time_string(
-                    local_route["vehicleEndTime"],
-                    local_to_global_delta - load_duration,
-                ),
-                # NOTE(ondrasej): The detour of the parking departure visit is
-                # the time spent in the parking (the delta between the arrival
-                # to the parking and the departure from the parking).
-                "detour": cfr_json.as_duration_string(local_route_duration),
-            })
-          case _:
-            raise ValueError(f"Unexpected visit type: '{visit_type}'")
-
-      # Add the transition back to the depot.
-      add_merged_transition(
-          copy.deepcopy(global_transitions[-1]),
-          copy.deepcopy(global_travel_steps[-1])
-          if use_deprecated_fields
-          else None,
-          vehicle=global_vehicle,
-      )
-      if populate_polylines:
-        route_polyline = cfr_json.merge_polylines_from_transitions(
-            merged_transitions
-        )
-        if route_polyline is not None:
-          merged_routes[-1]["routePolyline"] = route_polyline
-
-      # Update route metrics to include data from both local and global travel.
-      try:
-        cfr_json.recompute_route_metrics(
-            merged_model, merged_routes[-1], check_consistency=check_consistency
-        )
-      except ValueError:
-        logging.exception(
-            "Recomputing route metrics failed:"
-            "\nglobal_route_index=%d"
-            "\nglobal_route=%r"
-            "\nmerged_route=%r",
-            global_route_index,
-            global_route,
-            merged_route,
-        )
-        raise
-
-    merged_skipped_shipments = []
-    for local_skipped_shipment in local_response.get("skippedShipments", ()):
-      shipment_index, label = local_skipped_shipment["label"].split(
-          ": ", maxsplit=1
-      )
-      merged_skipped_shipments.append({
-          "index": int(shipment_index),
-          "label": label,
-      })
-    for global_skipped_shipment in global_response.get("skippedShipments", ()):
-      shipment_type, index = _parse_global_shipment_label(
-          global_skipped_shipment["label"]
-      )
-      match shipment_type:
-        case "s":
-          # Shipments delivered directly can be added directly to the list.
-          merged_skipped_shipments.append({
-              "index": int(index),
-              "label": self._shipments[index].get("label", ""),
-          })
-        case "p":
-          # For parking locations, we need to add all shipments delivered from
-          # that parking location.
-          local_route = local_routes[index]
-          seen_shipments = set()
-          for visit in cfr_json.get_visits(local_route):
-            shipment_index, label = visit["shipmentLabel"].split(
-                ": ", maxsplit=1
-            )
-            if shipment_index in seen_shipments:
-              # We have a pickup & delivery visit for each shipment, but we only
-              # need to add it once.
-              continue
-            seen_shipments.add(shipment_index)
-            merged_skipped_shipments.append({
-                "index": int(shipment_index),
-                "label": label,
-            })
-
-    if merged_skipped_shipments:
-      merged_result["skippedShipments"] = merged_skipped_shipments
-
-    return merged_request, merged_result
-
-  def _add_options_from_original_request(
-      self, request: cfr_json.OptimizeToursRequest
-  ) -> None:
-    """Copies solver options from `self._request` to `request`."""
-    # Copy solve mode.
-    # TODO(ondrasej): Consider always setting searchMode to
-    # CONSUME_ALL_AVAILABLE_TIME for the local model. The timeout for the local
-    # model is usually very short, and the difference between the two might not
-    # be that large.
-    search_mode = self._request.get("searchMode")
-    if search_mode is not None:
-      request["searchMode"] = search_mode
-
-    allow_large_deadlines = self._request.get(
-        "allowLargeDeadlineDespiteInterruptionRisk"
+    merge_local_and_global = _merged_model.MergeLocalAndGlobalModel(
+        self._request, self._parking_locations, self._options
     )
-    if allow_large_deadlines is not None:
-      request["allowLargeDeadlineDespiteInterruptionRisk"] = (
-          allow_large_deadlines
-      )
-
-    # Copy polyline settings.
-    populate_polylines = self._request.get("populatePolylines")
-    if populate_polylines is not None:
-      request["populatePolylines"] = populate_polylines
-    populate_transition_polylines = (
-        self._request.get("populateTransitionPolylines") or populate_polylines
+    return merge_local_and_global.merge_local_and_global_result(
+        local_response, global_response, check_consistency
     )
-    if populate_transition_polylines is not None:
-      request["populateTransitionPolylines"] = populate_transition_polylines
-
-    # Copy additional metadata.
-    if (parent := self._request.get("parent")) is not None:
-      request["parent"] = parent
 
 
 def _make_local_model_barrier_shipment(
@@ -1155,140 +736,6 @@ def _make_local_model_barrier_shipment(
         unit: {"amount": str(amount)} for unit, amount in load_limits.items()
     }
   return barrier
-
-
-def _make_local_model_shipment(
-    original_shipment_index: int,
-    original_shipment: cfr_json.Shipment,
-    parking: ParkingLocation,
-    parking_vehicle_indices: list[int],
-    parking_tags: _parking.ParkingLocationTags,
-) -> cfr_json.Shipment:
-  """Creates a shipment for a local pickup & delivery model.
-
-  Assumes that `original_shipment` is a shipment from the original model and
-  that it has either a single pickup or a single delivery at a customer address.
-  Creates a new shipment that has the same load requirement, the same pickup or
-  delivery, and a delivery or pickup to match it at the parking location.
-
-  Args:
-    original_shipment_index: The index of the shipment in the original model.
-    original_shipment: The shipment definition in the original model.
-    parking: The parking location from which the shipment is delivered or picked
-      up.
-    parking_vehicle_indices: The indices of the vehicles in the local model that
-      can perform this shipment.
-    parking_tags: The transition attribute tags used for the parking location.
-
-  Returns:
-    A new pickup & delivery shipment that can be used in a pickup & delivery
-    local model.
-
-  Raises:
-    ValueError: When the inputs are invalid or when the original shipment does
-      not have the required information.
-  """
-  delivery = cfr_json.get_delivery_or_none(original_shipment)
-  pickup = cfr_json.get_pickup_or_none(original_shipment)
-  is_pickup = pickup is not None
-  if (delivery is None) == (pickup is None):
-    raise ValueError(
-        "A shipment must have either a just pickup or just a delivery."
-    )
-
-  # Create a visit request for the shipment address.
-  shipment_visit = pickup or delivery
-  assert shipment_visit is not None
-
-  local_shipment_visit: cfr_json.VisitRequest = {
-      "arrivalWaypoint": shipment_visit["arrivalWaypoint"],
-  }
-  if (duration := shipment_visit.get("duration")) is not None:
-    local_shipment_visit["duration"] = duration
-  if (tags := shipment_visit.get("tags")) is not None:
-    local_shipment_visit["tags"] = [*tags, parking_tags.local_visit_tag]
-  else:
-    local_shipment_visit["tags"] = [parking_tags.local_visit_tag]
-  if (time_windows := shipment_visit.get("timeWindows")) is not None:
-    local_shipment_visit["timeWindows"] = time_windows
-
-  # Create a visit request for the parking location.
-  parking_visit: cfr_json.VisitRequest = {
-      "arrivalWaypoint": parking.waypoint_for_local_model,
-      "tags": [
-          parking.tag,
-          parking_tags.local_load_to_vehicle_tag
-          if is_pickup
-          else parking_tags.local_unload_from_vehicle_tag,
-      ],
-  }
-  parking_visit_duration = (
-      parking.load_duration_per_item
-      if is_pickup
-      else parking.unload_duration_per_item
-  )
-  if parking_visit_duration is not None and parking_visit_duration != "0s":
-    parking_visit["duration"] = parking_visit_duration
-
-  local_pickup = local_shipment_visit if is_pickup else parking_visit
-  local_delivery = parking_visit if is_pickup else local_shipment_visit
-
-  local_shipment: cfr_json.Shipment = {
-      "pickups": [local_pickup],
-      "deliveries": [local_delivery],
-      "label": (
-          f"{original_shipment_index}: {original_shipment.get('label', '')}"
-      ),
-      "allowedVehicleIndices": parking_vehicle_indices,
-  }
-  # Preserve load demands.
-  if (load_demands := original_shipment.get("loadDemands")) is not None:
-    local_shipment["loadDemands"] = load_demands
-
-  return local_shipment
-
-
-def _make_local_model_vehicle(
-    options: Options, parking: ParkingLocation, label: str
-) -> cfr_json.Vehicle:
-  """Creates a vehicle for the local model from a given parking location.
-
-  Args:
-    options: The options of the two-step planner.
-    parking: The parking location for which the vehicle is created.
-    label: The label of the new vehicle.
-
-  Returns:
-    The newly created vehicle.
-  """
-  vehicle: cfr_json.Vehicle = {
-      "label": label,
-      # Start and end waypoints.
-      "endWaypoint": parking.waypoint_for_local_model,
-      "startWaypoint": parking.waypoint_for_local_model,
-      # Limits and travel speed.
-      "travelDurationMultiple": parking.travel_duration_multiple,
-      "travelMode": parking.travel_mode,
-      # Costs.
-      "fixedCost": options.local_model_vehicle_fixed_cost,
-      "costPerHour": options.local_model_vehicle_per_hour_cost,
-      "costPerKilometer": options.local_model_vehicle_per_km_cost,
-      # Transition attribute tags.
-      "startTags": [parking.tag],
-      "endTags": [parking.tag],
-  }
-  if parking.avoid_indoor is not None:
-    vehicle["routeModifiers"] = {"avoidIndoor": parking.avoid_indoor}
-  if parking.max_round_duration is not None:
-    vehicle["routeDurationLimit"] = {
-        "maxDuration": parking.max_round_duration,
-    }
-  if parking.delivery_load_limits is not None:
-    vehicle["loadLimits"] = {
-        unit: {"maxLoad": str(max_load)}
-        for unit, max_load in parking.delivery_load_limits.items()
-    }
-  return vehicle
 
 
 def validate_request(
@@ -1335,99 +782,6 @@ def validate_request(
   if errors:
     return errors
   return None
-
-
-def _shipment_label_counts_in_global_route(
-    route: cfr_json.ShipmentRoute,
-) -> Mapping[str, int]:
-  r"""Counts base shipment labels in the visits on a global model route.
-
-  Assumes that the labels of the shipments on the route follow the format of
-  shipment labels in the global model "[ds]:\d+ (?<labels>.*)" where the
-  group <labels> contains a comma-separated list of shipment labels from the
-  base model.
-
-  Note that when shipment labels in the base model contain commas, the counts
-  might not match but the results will be comparable in terms of the comparisons
-  done in `_assert_global_model_routes_handle_same_shipments()`.
-
-  Args:
-    route: A route from the global model.
-
-  Returns:
-    A mapping from shipment labels in the base model to the count of their
-    appearances on the route.
-  """
-  label_count = collections.defaultdict(int)
-  for visit in cfr_json.get_visits(route):
-    global_shipment_label = visit["shipmentLabel"]
-    _, base_shipment_labels = global_shipment_label.split(" ", maxsplit=1)
-    for label in base_shipment_labels.split(","):
-      label_count[label] += 1
-  return label_count
-
-
-def _routes_by_unique_vehicle_indices(
-    response: cfr_json.OptimizeToursResponse,
-) -> Mapping[int, cfr_json.ShipmentRoute]:
-  routes = {}
-  for route in cfr_json.get_routes(response):
-    vehicle = route.get("vehicleIndex", 0)
-    assert vehicle not in routes, f"Duplicate vehicle index {vehicle}"
-    routes[vehicle] = route
-  return routes
-
-
-def _assert_global_model_routes_handle_same_shipments(
-    response_a: cfr_json.OptimizeToursResponse,
-    response_b: cfr_json.OptimizeToursResponse,
-) -> None:
-  """Checks that routes in `response_a` and `response_b` serve same shipments.
-
-  Assumes that `response_a` and `response_b` are two different solutions of
-  equivalent global models in a two-step routing model. They may be either two
-  different solutions of the same global model, or the solution of a base global
-  model and an integrated global model.
-
-  Checks that the routes in `response_a` and `response_b` are similar in the
-  sense that:
-  - both responses have the same number of routes,
-  - the shipment labels on the routes are the same. This is done by extracting
-    the "original shipment labels" part of the the shipment labels on both
-    routes and checking that their numbers are the same.
-
-  Args:
-    response_a: The first response to compare.
-    response_b: The second response to compare.
-
-  Raises:
-    AssertionError: When the routes are not equivalent.
-  """
-  routes_a = _routes_by_unique_vehicle_indices(response_a)
-  routes_b = _routes_by_unique_vehicle_indices(response_b)
-
-  assert len(routes_a) == len(routes_b), (
-      f"The number of routes is different. Found {len(routes_a)} routes in"
-      f" response_a, {len(routes_b)} in response_b."
-  )
-  vehicle_indices_a = set(routes_a)
-  vehicle_indices_b = set(routes_b)
-  assert vehicle_indices_a == vehicle_indices_b, (
-      "The vehicle indices of the routes are different. Found"
-      f" {vehicle_indices_a} in response_a and {vehicle_indices_b} in"
-      " response_b."
-  )
-
-  for vehicle_index in vehicle_indices_a:
-    route_a = routes_a[vehicle_index]
-    route_b = routes_b[vehicle_index]
-    label_count_a = _shipment_label_counts_in_global_route(route_a)
-    label_count_b = _shipment_label_counts_in_global_route(route_b)
-    assert label_count_a == label_count_b, (
-        f"Shipment label counts for vehicle {vehicle_index} are different:\n"
-        f"response_a: {label_count_a},\n"
-        f"response_b: {label_count_b}"
-    )
 
 
 class _RefinedRouteIntegration:
@@ -1543,7 +897,7 @@ class _RefinedRouteIntegration:
       )
 
     self._local_shipment_for_original_shipment = (
-        _make_local_shipment_from_shipment_map(
+        _local_model.make_local_shipment_from_shipment_map(
             cfr_json.get_shipments(local_model)
         )
     )
@@ -1614,8 +968,14 @@ class _RefinedRouteIntegration:
         self._integrated_global_request["considerRoadTraffic"] = (
             consider_road_traffic
         )
+      _shared.override_internal_parameters(
+          self._integrated_global_request,
+          self._request.get("internalParameters"),
+          self._options.global_internal_parameters,
+          self._options.global_refinement_internal_parameters,
+      )
 
-      _assert_global_model_routes_handle_same_shipments(
+      _global_model.assert_routes_handle_same_shipments(
           self._global_response, {"routes": self._integrated_global_routes}
       )
 
@@ -1655,7 +1015,7 @@ class _RefinedRouteIntegration:
     for global_skipped_shipment in global_skipped_shipments:
       global_shipment_index = global_skipped_shipment.get("index", 0)
       global_shipment = self._global_shipments[global_shipment_index]
-      visit_type, index = _parse_global_shipment_label(
+      visit_type, index = _global_model.parse_shipment_label(
           global_skipped_shipment["label"]
       )
       match visit_type:
@@ -1670,6 +1030,9 @@ class _RefinedRouteIntegration:
                   add_to_visits=None,
                   visit_start_time=None,
                   visit_detour=None,
+                  is_pickup=None,
+                  visit_request_index=None,
+                  injected_solution_location_token=None,
               )
           )
         case "p":
@@ -1790,7 +1153,9 @@ class _RefinedRouteIntegration:
         global_shipment_label = global_visit.get("shipmentLabel", "")
         global_shipment_index = global_visit.get("shipmentIndex", 0)
         global_shipment = self._global_shipments[global_shipment_index]
-        visit_type, index = _parse_global_shipment_label(global_shipment_label)
+        visit_type, index = _global_model.parse_shipment_label(
+            global_shipment_label
+        )
         visit_refinement = refinements.get(global_visit_index)
         if visit_refinement is not None:
           if visit_type != "p":
@@ -1819,6 +1184,11 @@ class _RefinedRouteIntegration:
           # carry over the shipment or local delivery round from the base model.
           visit_start_time = global_visit["startTime"]
           visit_detour = global_visit["detour"]
+          is_pickup = global_visit.get("isPickup", False)
+          visit_request_index = global_visit.get("visitRequestIndex", 0)
+          injected_solution_location_token = global_visit.get(
+              "injectedSolutionLocationToken"
+          )
           match visit_type:
             case "s":
               self._add_integrated_global_shipment(
@@ -1826,6 +1196,9 @@ class _RefinedRouteIntegration:
                   add_to_visits=integrated_global_visits,
                   visit_start_time=visit_start_time,
                   visit_detour=visit_detour,
+                  is_pickup=is_pickup,
+                  visit_request_index=visit_request_index,
+                  injected_solution_location_token=injected_solution_location_token,
               )
             case "p":
               self._integrate_unmodified_local_route(
@@ -1958,7 +1331,7 @@ class _RefinedRouteIntegration:
         # We first extract the index of the shipment in the original model and
         # then map it to a shipment index in the base local model. Since the
         # visits are already a local copy, we can safely update it in place.
-        shipment_index = _get_shipment_index_from_local_route_visit(visit)
+        shipment_index = _local_model.get_shipment_index_from_visit(visit)
         visit["shipmentIndex"] = self._local_shipment_for_original_shipment[
             shipment_index
         ]
@@ -1975,7 +1348,7 @@ class _RefinedRouteIntegration:
       # because the vehicle start time in the local refinement route is pinned
       # to the original start time (to avoid drift), but the solver can adjust
       # the end time and remove the wait time.
-      _remove_wait_time_in_local_route_unload(
+      _local_model.remove_wait_time_from_unload_transitions(
           integrated_route_visits,
           integrated_route_transitions,
           self._model["shipments"],
@@ -1987,7 +1360,7 @@ class _RefinedRouteIntegration:
           f"{parking_tag} [refinement]/{refined_split_index}"
       )
       self._integrated_local_vehicles.append(
-          _make_local_model_vehicle(
+          _local_model.make_vehicle(
               self._options, parking, integrated_local_vehicle_label
           )
       )
@@ -2017,7 +1390,7 @@ class _RefinedRouteIntegration:
       self._integrated_local_routes.append(integrated_local_route)
 
       # Add a global shipment for the local delivery round.
-      integrated_global_shipment = _make_global_model_shipment_for_local_route(
+      integrated_global_shipment = _global_model.make_shipment_for_local_route(
           self._model,
           integrated_local_route_index,
           integrated_local_route,
@@ -2046,6 +1419,12 @@ class _RefinedRouteIntegration:
           # exactly the start/end times of the local delivery rounds.
           visit_start_time=integrated_local_route["vehicleStartTime"],
           visit_detour=cfr_json.as_duration_string(integrated_detour),
+          # NOTE(ondrasej): As of 2024-05-28, virtual shipments for parking
+          # location visits are always delivery-only, and they have exactly one
+          # delivery visit request.
+          is_pickup=False,
+          visit_request_index=0,
+          injected_solution_location_token=None,
       )
 
   def _integrate_unmodified_local_route(
@@ -2109,6 +1488,9 @@ class _RefinedRouteIntegration:
         add_to_visits,
         visit_start_time=visit_start_time,
         visit_detour=visit_detour,
+        is_pickup=None if add_to_visits is None else False,
+        visit_request_index=None if add_to_visits is None else 0,
+        injected_solution_location_token=None,
     )
 
   def _add_integrated_global_shipment(
@@ -2117,6 +1499,12 @@ class _RefinedRouteIntegration:
       add_to_visits: list[cfr_json.Visit] | None,
       visit_start_time: cfr_json.TimeString | None,
       visit_detour: cfr_json.DurationString | None,
+      # NOTE(ondrasej): As of 2024-05-28, virtual shipments for parking location
+      # visits are always delivery-only, and they have exactly one delivery
+      # visit request.
+      visit_request_index: int | None,
+      injected_solution_location_token: int | None,
+      is_pickup: bool | None,
   ) -> int:
     """Adds `shipment` to the integrated request and returns its index.
 
@@ -2129,6 +1517,8 @@ class _RefinedRouteIntegration:
       visit_detour: The detour of the visit for the new shipment in the
         integrated global model. Must be None exactly when `add_to_visits` is
         None.
+      injected_solution_location_token: The location token associated with this
+        visit or None, if no token is needed.
 
     Returns:
       The index of the newly added integrated shipment.
@@ -2136,25 +1526,35 @@ class _RefinedRouteIntegration:
     Raises:
       ValueError: When the shipment has more than one visit request.
     """
-    # NOTE(ondrasej): This method works only for shipments with a single
-    # delivery option and no pickups.
-    _, is_pickup = _parking.get_visit_request(shipment)
     # Visit start time must be provided when creating a visit for the integrated
     # global shipment, even if it is not included in the initial solution.
     assert (
         (visit_start_time is None)
         == (add_to_visits is None)
         == (visit_detour is None)
+        == (visit_request_index is None)
+        == (is_pickup is None)
     )
 
     shipment_index = len(self._integrated_global_shipments)
     self._integrated_global_shipments.append(shipment)
     if add_to_visits is not None:
+      assert visit_detour is not None
+      assert visit_request_index is not None
+      assert is_pickup is not None
       visit: cfr_json.Visit = {
           "shipmentIndex": shipment_index,
           "shipmentLabel": shipment.get("label", ""),
           "isPickup": is_pickup,
       }
+      if injected_solution_location_token is not None:
+        visit["injectedSolutionLocationToken"] = (
+            injected_solution_location_token
+        )
+      if visit_request_index:
+        visit["visitRequestIndex"] = visit_request_index
+      if is_pickup:
+        visit["isPickup"] = is_pickup
       if self._integration_mode != IntegrationMode.VISITS_ONLY:
         visit["startTime"] = visit_start_time
         visit["detour"] = visit_detour
@@ -2162,325 +1562,9 @@ class _RefinedRouteIntegration:
     return shipment_index
 
 
-def _make_global_model_shipment_for_local_route(
-    model: cfr_json.ShipmentModel,
-    local_route_index: int,
-    local_route: cfr_json.ShipmentRoute,
-    parking: ParkingLocation,
-    transition_attributes: _parking.TransitionAttributeManager,
-) -> cfr_json.Shipment:
-  """Creates a virtual shipment in the global model for a local delivery route.
-
-  Args:
-    model: The original model.
-    local_route_index: The index of the local delivery route in the local
-      response.
-    local_route: The local delivery route.
-    parking: The parking location for the local delivery route.
-    transition_attributes: The parking transition attribute manager used for the
-      construction of the global model.
-
-  Returns:
-    The newly created global shipment.
-  """
-  visits = cfr_json.get_visits(local_route)
-
-  # Get all shipments from the original model that are delivered in this
-  # parking location route.
-  shipment_indices = _get_shipment_indices_from_local_route_visits(
-      cfr_json.get_shipments(model), visits
-  )
-  shipments = tuple(
-      model["shipments"][shipment_index] for shipment_index in shipment_indices
-  )
-  assert shipments
-
-  global_delivery_tags: list[str] = [parking.tag]
-  global_delivery: cfr_json.VisitRequest = {
-      # We use the waypoint of the parking location for the waypoint.
-      "arrivalWaypoint": parking.waypoint,
-      # The duration of the delivery at the parking location is the total
-      # duration of the local route for this round.
-      "duration": local_route["metrics"]["totalDuration"],
-      "tags": global_delivery_tags,
-  }
-  global_time_windows = _get_local_model_route_start_time_windows(
-      model, local_route
-  )
-  if global_time_windows is not None:
-    global_delivery["timeWindows"] = global_time_windows
-
-  # Add arrival/departure/reload costs and delays if needed.
-  parking_tags = transition_attributes.get_or_create(parking)
-  if parking_tags.has_global_transition_attributes:
-    global_delivery_tags.append(parking_tags.global_tag)
-
-  shipment_labels = ",".join(shipment["label"] for shipment in shipments)
-  global_shipment: cfr_json.Shipment = {
-      "label": f"p:{local_route_index} {shipment_labels}",
-      # We use the total duration of the parking location route as the
-      # duration of this virtual shipment.
-      "deliveries": [global_delivery],
-  }
-  # The load demands of the virtual shipment is the sum of the demands of
-  # all individual shipments delivered on the local route.
-  load_demands = cfr_json.combined_load_demands(shipments)
-  if load_demands:
-    global_shipment["loadDemands"] = load_demands
-
-  # Add the penalty cost of the virtual shipment if needed.
-  penalty_cost = cfr_json.combined_penalty_cost(shipments)
-  if penalty_cost is not None:
-    global_shipment["penaltyCost"] = penalty_cost
-
-  allowed_vehicle_indices = cfr_json.combined_allowed_vehicle_indices(shipments)
-  if allowed_vehicle_indices:
-    global_shipment["allowedVehicleIndices"] = allowed_vehicle_indices
-
-  costs_per_vehicle_and_indices = cfr_json.combined_costs_per_vehicle(shipments)
-  if costs_per_vehicle_and_indices is not None:
-    vehicle_indices, costs = costs_per_vehicle_and_indices
-    global_shipment["costsPerVehicle"] = costs
-    global_shipment["costsPerVehicleIndices"] = vehicle_indices
-
-  return global_shipment
-
-
-_GLOBAL_SHIPEMNT_LABEL = re.compile(r"^([ps]):(\d+) .*")
 _REFINEMENT_VEHICLE_LABEL = re.compile(
     r"^global_route:(\d+) start:(\d+) size:(\d+) parking:(.*)$"
 )
-
-
-T = TypeVar("T")
-
-
-def _interval_intersection(
-    intervals_a: Sequence[tuple[T, T]], intervals_b: Sequence[tuple[T, T]]
-) -> Sequence[tuple[T, T]]:
-  """Computes intersection of two sets of intervals.
-
-  Each element of the input sequences is an interval represented as a tuple
-  [start, end] (inclusive on both sides), and that the intervals in each of the
-  inputs are disjoint (they may not even touch) and sorted by their start value.
-
-  The function works for any value type that supports comparison and ordering.
-
-  Args:
-    intervals_a: The first input.
-    intervals_b: The second input.
-
-  Returns:
-    The intersection of the two inputs, represented as a sequence of disjoint
-    intervals ordered by their start value. Returns an empty sequence when the
-    intersection is empty.
-  """
-  out_intervals = []
-  a_iter = iter(intervals_a)
-  b_iter = iter(intervals_b)
-
-  try:
-    a_start, a_end = next(a_iter)
-    b_start, b_end = next(b_iter)
-    while True:
-      while a_end < b_start:
-        # Skip all intervals from a_iter that do not overlap the current
-        # interval from b.
-        a_start, a_end = next(a_iter)
-      while b_end < a_start:
-        # Skip all intervals from b_iter that do not overlap the current
-        # interval from a.
-        b_start, b_end = next(b_iter)
-      if a_end >= b_start and b_end >= a_start:
-        # We stopped because we have an overlap here. Compute the intersection
-        # of the two intervals and fetch a new interval from the input whose
-        # interval ends at the end of the intersection interval.
-        out_start = max(a_start, b_start)
-        out_end = min(b_end, a_end)
-        out_intervals.append((out_start, out_end))
-        if out_end == a_end:
-          a_start, a_end = next(a_iter)
-        if out_end == b_end:
-          b_start, b_end = next(b_iter)
-  except StopIteration:
-    pass
-  return out_intervals
-
-
-def _get_local_model_route_start_time_windows(
-    model: cfr_json.ShipmentModel,
-    route: cfr_json.ShipmentRoute,
-) -> list[cfr_json.TimeWindow] | None:
-  """Computes global time windows for starting a local route.
-
-  Computes a list of time windows for the start of the local route that are
-  compatible with time windows of all visits on the local route. The output list
-  contains only hard time windows, soft time windows are not taken into account
-  by this algorithm. Returns None when the route can start at any time within
-  the global start/end time interval of the model.
-
-  The function always returns either None to signal that any start time is
-  possible or returns at least one time window that contains the original
-  vehicle start time of the route.
-
-  Args:
-    model: The model in which the route is computed.
-    route: The local route for which the time window is computed.
-
-  Returns:
-    A list of time windows for the start of the route. The time windows account
-    for the time needed to walk to the first visit, and the time needed to
-    return from the last visit back to the parking. When the local route can
-    start at any time within the global start/end interval of the model, returns
-    None.
-  """
-  visits = cfr_json.get_visits(route)
-  if not visits:
-    return None
-
-  global_start_time = cfr_json.get_global_start_time(model)
-  global_end_time = cfr_json.get_global_end_time(model)
-
-  route_start_time = cfr_json.parse_time_string(route["vehicleStartTime"])
-  shipments = cfr_json.get_shipments(model)
-
-  # The start time window for the route is computed as the intersection of
-  # "route start time windows" of all visits in the route. A "route start time
-  # window" of a visit is the time window of the visit, shifted by the time
-  # since the start of the route needed to get to the vist (including all visits
-  # that precede it on the route).
-  # By starting the route in the intersection of these time windows, we
-  # guarantee that each visit will start within its own time time window.
-
-  # Start by allowing any start time for the local route.
-  overall_route_start_time_intervals = ((global_start_time, global_end_time),)
-
-  for visit in visits:
-    # NOTE(ondrasej): We can't use `visit["shipmentIndex"]` to get the shipment;
-    # `visit` is from the local model, while `model` is the global model. To
-    # get the expected results, we need to use the shipment label from the visit
-    # to get the shipment index in the base model.
-    shipment_index = _get_shipment_index_from_local_route_visit(visit)
-    shipment = shipments[shipment_index]
-    if _local_route_visit_is_to_parking(visit, shipment=shipment):
-      # Visits requests for the parking exist only in the local model; they do
-      # not exist in the original model. But they also never have a time window,
-      # so we can just skip them.
-      continue
-
-    deliveries = shipment.get("deliveries", ())
-    pickups = shipment.get("pickups", ())
-
-    # When True, the shipment contains only a single pickup request; otherwise,
-    # the shipment contains only a single delivery request.
-    shipment_is_pickup = bool(pickups)
-
-    visit_request = pickups[0] if shipment_is_pickup else deliveries[0]
-    time_windows = visit_request.get("timeWindows")
-    if not time_windows:
-      # This shipment can be delivered at any time. No refinement of the route
-      # delivery time interval is needed.
-      continue
-
-    # The time needed to get to this visit since the start of the local route.
-    # This includes both the time needed for transit and the time needed to
-    # handle any shipments that come on the route before this one.
-    # TODO(ondrasej): Verify that the translation of the time windows is correct
-    # in the presence of wait times.
-    visit_start_time = cfr_json.parse_time_string(visit["startTime"])
-    visit_start_offset = visit_start_time - route_start_time
-
-    # Refine `route_start_time` using the route start times computed from time
-    # windows of all visits on the route.
-    shipment_route_start_time_intervals = []
-    for time_window in time_windows:
-      time_window_start = time_window.get("startTime")
-      time_window_end = time_window.get("endTime")
-
-      # Compute the start time window for this shipment, adjusted by the time
-      # needed to process all shipments that come before this one and to arrive
-      # to the delivery location.
-      # All times are clamped by the (global_start_time, global_end_time)
-      # interval that we start with, so there's no need to worry about clamping
-      # any times for an individual time window.
-      shipment_route_start_time_intervals.append((
-          cfr_json.parse_time_string(time_window_start) - visit_start_offset
-          if time_window_start is not None
-          else global_start_time,
-          cfr_json.parse_time_string(time_window_end) - visit_start_offset
-          if time_window_end is not None
-          else global_end_time,
-      ))
-
-    overall_route_start_time_intervals = _interval_intersection(
-        overall_route_start_time_intervals, shipment_route_start_time_intervals
-    )
-
-  if not overall_route_start_time_intervals:
-    raise ValueError(
-        f"The shipments in local route {route['vehicleLabel']!r} have"
-        " incompatible time windows. Arrived at an empty time window"
-        " intersection."
-    )
-
-  # Transform intervals into time window data structures.
-  global_time_windows = []
-  for start, end in overall_route_start_time_intervals:
-    global_time_window = {}
-    if start > global_start_time:
-      global_time_window["startTime"] = cfr_json.as_time_string(start)
-    if end < global_end_time:
-      global_time_window["endTime"] = cfr_json.as_time_string(end)
-    if global_time_window:
-      global_time_windows.append(global_time_window)
-
-  if not global_time_windows:
-    # We might have dropped a single time window that spans from the global
-    # start time to the global end time, and that is OK.
-    return None
-  return global_time_windows
-
-
-def _local_route_visit_is_to_parking(
-    local_visit: cfr_json.Visit,
-    shipment: cfr_json.Shipment | None = None,
-    shipments: Sequence[cfr_json.Shipment] | None = None,
-) -> bool:
-  """Checks whether a visit on a local route is to the parking location.
-
-  We say that a shipment is a "pickup" if it has only one pickup and no
-  deliveries; we say it's a "delivery" when it has only one delivery and no
-  pickups.
-  For a pickup shipment, the visit is to the parking when it is a delviery;
-  For a delivery shipment, the visit is to the parking when it is a pickup.
-
-  Args:
-    local_visit: A visit in the solution of a local model.
-    shipment: The shipment from the original model performed in `local_visit`.
-    shipments: The list of all shipments from the original model. Exactly one of
-      `shipment` and `shipments` must not be None.
-
-  Returns:
-    True when local_visit is to the parking location; False, when it is to the
-    customer address.
-  """
-  if (shipment is None) == (shipments is None):
-    raise ValueError(
-        "Exactly one of `shipment` and `shipments` must be specified."
-    )
-  if shipment is None:
-    shipment_index = _get_shipment_index_from_local_route_visit(local_visit)
-    shipment = shipments[shipment_index]
-
-  deliveries = shipment.get("deliveries", ())
-  pickups = shipment.get("pickups", ())
-  if len(deliveries) + len(pickups) != 1:
-    raise ValueError(
-        "Only shipments with exactly one visit request are supported."
-    )
-  shipment_is_pickup = bool(pickups)
-  visit_is_pickup = local_visit.get("isPickup", False)
-  return visit_is_pickup != shipment_is_pickup
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2578,7 +1662,7 @@ def _get_consecutive_parking_location_visits(
       round_visits = []
       for local_visit in cfr_json.get_visits(local_route):
         round_visits.append({
-            "shipmentIndex": _get_shipment_index_from_local_route_visit(
+            "shipmentIndex": _local_model.get_shipment_index_from_visit(
                 local_visit
             ),
             "visitRequestIndex": local_visit.get("visitRequestIndex", 0),
@@ -2599,7 +1683,7 @@ def _get_consecutive_parking_location_visits(
 
   for global_visit_index, global_visit in enumerate(global_visits):
     global_visit_label = global_visit["shipmentLabel"]
-    visit_type, index = _parse_global_shipment_label(global_visit_label)
+    visit_type, index = _global_model.parse_shipment_label(global_visit_label)
     if visit_type == "s":
       add_sequence_if_needed(global_visit_index)
       previous_parking_tag = None
@@ -2613,7 +1697,7 @@ def _get_consecutive_parking_location_visits(
         "waitDuration", "0s"
     ).startswith("-")
     local_route = local_routes[index]
-    parking_tag = _get_parking_tag_from_local_route(local_route)
+    parking_tag = _local_model.get_parking_tag_from_route(local_route)
     if (
         parking_tag != previous_parking_tag
         or separated_by_break
@@ -2637,67 +1721,6 @@ def _get_consecutive_parking_location_visits(
     local_route_indices.append(index)
   add_sequence_if_needed(len(global_visits))
   return consecutive_visits
-
-
-def _remove_wait_time_in_local_route_unload(
-    visits: Sequence[cfr_json.Visit],
-    transitions: Sequence[cfr_json.Transition],
-    shipments: Sequence[cfr_json.Shipment],
-) -> None:
-  """Removes any wait time in transitions between unloading items from vehicle.
-
-  Assumes that the visits and transitions are from a pickup & delivery local
-  route model, and that they are from a single visit round. When the round
-  starts with unloading items from the vehicle, removes any wait time from the
-  transitions between the visits, and pushes the start times towards the first
-  delivery visit.
-
-  This does not affect feasibility of the route, because the unload visits never
-  have a time window.
-
-  On the other hand, we do not need to do the same to load visits at the end of
-  the delivery round (if any); they would be removed by the solver as part of
-  minimizing the total route duration.
-
-  Args:
-    visits: The visits of the local visit round.
-    transitions: The corresponding transitions.
-    shipments: The list of shipments in the local model.
-  """
-  assert len(visits) + 1 == len(transitions)
-
-  # Find the index of the first visit that is not an unload at the parking
-  # location.
-  unload_visit_end = 0
-  for unload_visit_end, visit in enumerate(visits):
-    if not _local_route_visit_is_to_parking(visit, shipments=shipments):
-      break
-
-  if unload_visit_end == 0:
-    return
-
-  cumulated_wait_time = datetime.timedelta()
-  for visit_index in range(unload_visit_end - 1, -2, -1):
-    transition_out = transitions[visit_index + 1]
-    transition_out_wait_duration = cfr_json.parse_duration_string(
-        transition_out.get("waitDuration", "0s")
-    )
-    transition_out["totalDuration"] = cfr_json.as_duration_string(
-        cfr_json.parse_duration_string(
-            transition_out.get("totalDuration", "0s")
-        )
-        - transition_out_wait_duration
-    )
-    cumulated_wait_time += transition_out_wait_duration
-    transition_out["waitDuration"] = "0s"
-    transition_out["startTime"] = cfr_json.update_time_string(
-        transition_out["startTime"], cumulated_wait_time
-    )
-    if visit_index >= 0:
-      visit = visits[visit_index]
-      visit["startTime"] = cfr_json.update_time_string(
-          visit["startTime"], cumulated_wait_time
-      )
 
 
 def _split_refined_local_route(route: cfr_json.ShipmentRoute) -> Sequence[
@@ -2799,141 +1822,3 @@ def _parse_refinement_vehicle_label(label: str) -> tuple[int, int, int, str]:
   if not match:
     raise ValueError("Invalid vehicle label in refinement model: {label!r}")
   return int(match[1]), int(match[2]), int(match[3]), match[4]
-
-
-def _parse_global_shipment_label(label: str) -> tuple[str, int]:
-  match = _GLOBAL_SHIPEMNT_LABEL.match(label)
-  if not match:
-    raise ValueError(f"Invalid shipment label: {label!r}")
-  return match[1], int(match[2])
-
-
-def _make_local_shipment_from_shipment_map(
-    local_shipments: Sequence[cfr_json.Shipment],
-) -> Mapping[int, int]:
-  """Returns a map from shipment indices in the base model to the local model.
-
-  Args:
-    local_shipments: The list of shipments from a local model in the two-step
-      routing library.
-
-  Returns:
-    A mapping where the keys are the indices of the shipment in the base model,
-    and the value for a key is the index of the corresponding shipment in the
-    local model. If a shipment is not delivered through a parking location, the
-    shipment index is not present in the returned mapping.
-  """
-  local_shipment_for_base_shipment = {}
-  for local_index, local_shipment in enumerate(local_shipments):
-    shipment_index = _get_shipment_index_from_local_shipment(local_shipment)
-    if shipment_index in local_shipment_for_base_shipment:
-      raise ValueError(
-          "Duplicate shipment indices in the local shipment labels"
-      )
-    local_shipment_for_base_shipment[shipment_index] = local_index
-  return local_shipment_for_base_shipment
-
-
-def _get_shipment_index_from_local_label(label: str) -> int:
-  shipment_index, _ = label.split(":")
-  return int(shipment_index)
-
-
-def _get_shipment_index_from_local_route_visit(visit: cfr_json.Visit) -> int:
-  return _get_shipment_index_from_local_label(visit["shipmentLabel"])
-
-
-def _get_shipment_index_from_local_shipment(
-    local_shipment: cfr_json.Shipment,
-) -> int:
-  local_shipment_label = local_shipment.get("label", "")
-  return _get_shipment_index_from_local_label(local_shipment_label)
-
-
-def _get_shipment_indices_from_local_route_visits(
-    shipments: Sequence[cfr_json.Shipment],
-    visits: Sequence[cfr_json.Visit],
-) -> Sequence[int]:
-  """Returns the list of shipment indices from a route in the local model.
-
-  Args:
-    shipments: The shipments from the original model.
-    visits: The list of visits from a route that is from a solution of the local
-      model. Shipment labels in the visit must follow the format used in the
-      local model.
-
-  Raises:
-    ValueError: When some of the shipment labels do not follow the expected
-      format.
-  """
-  shipment_indices = []
-  for visit in visits:
-    shipment_index = _get_shipment_index_from_local_route_visit(visit)
-    shipment = shipments[shipment_index]
-    if not _local_route_visit_is_to_parking(visit, shipment=shipment):
-      shipment_indices.append(shipment_index)
-  return shipment_indices
-
-
-def _get_parking_tag_from_local_route(route: cfr_json.ShipmentRoute) -> str:
-  """Extracts the parking location tag from a route.
-
-  Expects that the route is from a solution of the local model, and the vehicle
-  label in the route follows the format used for the vehicles.
-
-  Args:
-    route: The route from which the parking tag is extracted.
-
-  Returns:
-    The parking tag for the route.
-
-  Raises:
-    ValueError: When the vehicle label of the route does not have the expected
-      format.
-  """
-  parking_tag, _ = route["vehicleLabel"].rsplit(" [")
-  if not parking_tag:
-    raise ValueError(
-        "Invalid vehicle label in the local route: " + route["vehicleLabel"]
-    )
-  return parking_tag
-
-
-def _format_time_window(
-    time_window: tuple[str | None, str | None],
-) -> Iterable[str]:
-  """Formats a single time window in a parking group key."""
-  start, end = time_window
-  yield "("
-  if start is not None:
-    yield "start="
-    yield start
-  if start is not None and end is not None:
-    yield " "
-  if end is not None:
-    yield "end="
-    yield end
-  yield ")"
-
-
-def _make_local_model_vehicle_label(group_key: _parking.GroupKey) -> str:
-  """Creates a label for a vehicle in the local model."""
-  parts = [group_key.parking_tag, " ["]
-  num_initial_parts = len(parts)
-
-  def add_part(keyword: str, value: Any):
-    if len(parts) > num_initial_parts:
-      parts.append(" ")
-    parts.append(keyword)
-    parts.append(str(value))
-
-  if group_key.time_windows:
-    parts.append("time_windows=")
-    for time_window in group_key.time_windows:
-      parts.extend(_format_time_window(time_window))
-  if group_key.allowed_vehicle_indices is not None:
-    add_part("vehicles=", group_key.allowed_vehicle_indices)
-  if group_key.penalty_cost_group is not None:
-    add_part("penalty_cost=", group_key.penalty_cost_group)
-  parts.append("]")
-  return "".join(parts)

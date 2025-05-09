@@ -1,5 +1,5 @@
 # build frontend
-FROM node:16-alpine as build
+FROM node:22-alpine AS build
 
 WORKDIR /usr/src/app
 
@@ -14,10 +14,10 @@ RUN npm install -g json-merger && \
 
 COPY frontend/ .
 ARG configuration=production
-RUN npm run build -- --outputPath=./dist/out --configuration $configuration
+RUN npm run build -- --output-path=./dist/out --configuration $configuration
 
 # build backend
-FROM node:16-alpine
+FROM node:22-alpine
 
 WORKDIR /usr/src/app
 
@@ -30,5 +30,5 @@ RUN npm run build
 # copy frontend static content
 COPY --from=build /usr/src/app/dist/out/ /usr/src/app/public/
 
-EXPOSE 8080
+EXPOSE 80
 CMD [ "node", "server.js" ]

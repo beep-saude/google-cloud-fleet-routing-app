@@ -2,6 +2,15 @@
   position: relative;
 }
 
+.map-controls {
+  position: absolute;
+  z-index: 1;
+  top: 10px;
+  left: 50px;
+  display: flex;
+  gap: 1rem;
+}
+
 app-map-type-button {
   position: absolute;
   z-index: 1;

@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import fs, { constants } from "fs";
 import path from "path";
@@ -39,14 +46,14 @@ class StorageSerivce {
 
   constructor() {
     if (!process.env.STORAGE_BUCKET_NAME) {
-      log.warn(
+      log.logger.warn(
         "Missing environment variable `STORAGE_BUCKET_NAME`, storage operations will not work"
       );
       return;
     }
 
     const projectId = process.env.STORAGE_PROJECT_ID || process.env.PROJECT_ID;
-    log.debug(`Storage project:  ${projectId}`);
+    log.logger.debug(`Storage project:  ${projectId}`);
 
     const storageOptions: StorageOptions = {
       projectId,
@@ -59,13 +66,13 @@ class StorageSerivce {
     ) {
       const keyFilename =
         process.env.STORAGE_CREDENTIALS || path.join(__dirname, "keys.json");
-      log.debug(`Storage keyFilename:  ${keyFilename}`);
+      log.logger.debug(`Storage keyFilename:  ${keyFilename}`);
 
       try {
         fs.accessSync(keyFilename, constants.R_OK);
         storageOptions.keyFilename = keyFilename;
       } catch {
-        log.warn(
+        log.logger.warn(
           "STORAGE_PROJECT_ID set, but no credentials file found. Will use default application credentials."
         );
       }
@@ -76,7 +83,7 @@ class StorageSerivce {
       const client = new Storage(storageOptions);
       this._bucket = client.bucket(process.env.STORAGE_BUCKET_NAME);
     } catch (err) {
-      log.error(err, "Failed to initialize storage client");
+      log.logger.error(err, "Failed to initialize storage client");
     }
   }
 
@@ -128,12 +135,12 @@ class StorageSerivce {
     const results: FileListEntry[] = [];
     files.forEach((file) => {
       if (file.name.match(ext)) {
-        log.debug("File name is: " + file.name);
+        log.logger.debug("File name is: " + file.name);
 
         const result: FileListEntry = {
           name: shortName(file.name),
-          dateModified: file.metadata.updated,
-          dateCreated: file.metadata.timeCreated,
+          dateModified: new Date(file.metadata.updated!),
+          dateCreated: new Date(file.metadata.timeCreated!),
         };
 
         if (nextPageQuery) {

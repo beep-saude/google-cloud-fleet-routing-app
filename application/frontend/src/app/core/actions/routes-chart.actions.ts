@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import { createAction, props } from '@ngrx/store';
 import { ActiveFilter } from 'src/app/shared/models';
@@ -49,6 +56,11 @@ export const removeFilter = createAction(
   props<{ filter: ActiveFilter }>()
 );
 
+export const setFilters = createAction(
+  '[RoutesChart] Set Filters',
+  props<{ filters: ActiveFilter[] }>()
+);
+
 export const selectRange = createAction(
   '[RoutesChart] Select Range',
   props<{ rangeIndex: number }>()
@@ -82,3 +94,17 @@ export const mouseEnterVisitRequest = createAction(
 );
 
 export const mouseExitVisitRequest = createAction('[RoutesChart] Mouse Exit Visit Request');
+
+export const mouseEnterVisits = createAction(
+  '[RoutesChart] Mouse Enter Visits',
+  props<{ ids: number[] }>()
+);
+
+export const mouseExitVisits = createAction('[RoutesChart] Mouse Exit Visits');
+
+export const resetView = createAction('[RoutesChart] Reset View');
+
+export const setView = createAction(
+  '[RoutesChart] Set View',
+  props<{ selectedRouteIds: number[]; rangeOffset: number }>()
+);

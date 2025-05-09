@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import url from "url";
 
@@ -14,9 +21,10 @@ export const router = express.Router();
 
 import { generateFileName, shortName, storage } from "../services/storage";
 import { log } from "../logging";
+import { GetFilesOptions } from "@google-cloud/storage";
 
 router.get("/healthz", async (req: Request, res: Response) => {
-  log.debug("Health check (API)");
+  log.logger.debug("Health check (API)");
   res.status(200).send("OK");
 });
 
@@ -37,7 +45,7 @@ router.get("/status/:date?/:name", async (req: Request, res: Response) => {
     req.params.name,
     req.params.date
   );
-  log.debug(fileName);
+  log.logger.debug(fileName);
 
   const status = (await storage.bucket.file(fileName).exists())[0];
   const result = {
@@ -54,14 +62,14 @@ router.get("/status/:date?/:name", async (req: Request, res: Response) => {
 router.get("/scenarios", async (req: Request, res: Response) => {
   const queryObject = url.parse(req.url, true).query;
 
-  const options: { [k: string]: any } = {};
+  const options: GetFilesOptions = {};
 
   if ("limit" in queryObject) {
     options.maxResults = parseInt(queryObject.limit as string);
     options.autoPaginate = false;
   }
   if ("pageToken" in queryObject) {
-    options.pageToken = queryObject.pageToken;
+    options.pageToken = queryObject.pageToken as string;
   }
 
   if ("startsWith" in queryObject) {
@@ -80,14 +88,14 @@ router.get("/scenarios", async (req: Request, res: Response) => {
 router.get("/solutions", async (req: Request, res: Response) => {
   const queryObject = url.parse(req.url, true).query;
 
-  const options: { [k: string]: any } = {};
+  const options: GetFilesOptions = {};
 
   if ("limit" in queryObject || "pageToken" in queryObject) {
     options.maxResults = parseInt(queryObject.limit as string);
     options.autoPaginate = true;
 
     if ("pageToken" in queryObject) {
-      options.pageToken = queryObject.pageToken;
+      options.pageToken = queryObject.pageToken as string;
     }
   }
 
@@ -166,7 +174,7 @@ router.post("/scenarios/:date?/:name", async (req: Request, res: Response) => {
       data: fileUrl,
     });
   } catch (error) {
-    log.error(error);
+    log.logger.error(error);
     return res.sendStatus(500);
   }
 });
@@ -191,7 +199,7 @@ router.post("/solutions/:date?/:name", async (req: Request, res: Response) => {
       data: fileUrl,
     });
   } catch (error) {
-    log.error(error);
+    log.logger.error(error);
     return res.sendStatus(500);
   }
 });
@@ -214,7 +222,7 @@ router.put("/scenarios/:date?/:name", async (req: Request, res: Response) => {
       data: fileUrl,
     });
   } catch (error) {
-    log.error(error);
+    log.logger.error(error);
     return res.sendStatus(500);
   }
 });
@@ -240,7 +248,7 @@ router.put("/solutions/:date?/:name", async (req: Request, res: Response) => {
       data: fileUrl,
     });
   } catch (error) {
-    log.error(error);
+    log.logger.error(error);
     return res.sendStatus(500);
   }
 });

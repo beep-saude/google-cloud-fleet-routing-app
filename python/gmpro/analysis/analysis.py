@@ -220,6 +220,29 @@ class Scenario:
     """Returns the label of a vehicle."""
     return self.vehicles[vehicle_index].get("label", "")
 
+  def vehicle_labels(self, vehicle_indices: Sequence[int]) -> Sequence[str]:
+    """Returns a sequence of vehicle labels for vehicle indices."""
+    return [
+        self.vehicle_label(vehicle_index) for vehicle_index in vehicle_indices
+    ]
+
+
+@dataclasses.dataclass(frozen=True)
+class ParkingwiseShipmentDetails:
+  """Contains details about a parkingwise shipment.
+
+  Attributes:
+    parking_tag: Tag of the parking location.
+    shipments: The list of shipments to be delivered from the parking location.
+    arrival_index: Index of the first visit to the parking location.
+    departure_index: Index of the last visit from the parking location.
+  """
+
+  parking_tag: two_step_routing.ParkingTag
+  shipments: Sequence[cfr_json.Shipment]
+  arrival_index: int
+  departure_index: int
+
 
 def get_parking_location_aggregate_data(
     scenario: Scenario,
@@ -507,7 +530,7 @@ def group_global_visits(
         num_rounds,
         group_shipments,
         first_arrival_visit_index,
-        last_departure_visit_index
+        last_departure_visit_index,
     )
 
     global_visit_index += 1
@@ -664,6 +687,290 @@ def get_time_windows_start(
   if has_time_windows:
     return start
   return None
+
+
+def get_parking_arrival_time(
+    route: cfr_json.ShipmentRoute,
+    arrival_visit_index: int,
+) -> datetime.datetime:
+  """Get the arrival time at a parking lot."""
+  visits = cfr_json.get_visits(route)
+  arrival_visit = visits[arrival_visit_index]
+  arrival_time = cfr_json.parse_time_string(arrival_visit["startTime"])
+  return arrival_time
+
+
+def get_parking_departure_time(
+    route: cfr_json.ShipmentRoute,
+    departure_visit_index: int,
+) -> datetime.datetime:
+  """Get the departure time from the parking lot."""
+  transitions = cfr_json.get_transitions(route)
+  transition = transitions[departure_visit_index + 1]
+  return cfr_json.parse_time_string(transition.get("startTime"))
+
+
+def detect_violations(
+    scenario: Scenario,
+    visits: Sequence[cfr_json.Visit],
+    arrival_visit_index: int,
+    departure_visit_index: int,
+    time_delta: datetime.timedelta,
+) -> bool:
+  """Detects violations of time window constraints.
+
+  For every visit, we obtain shipment and visit requests depending on whether
+  it is a pickup or a delivery.  We obtain time window constraints for a visit
+  request and make sure that none of those constraints are violated with the
+  shuffling of slots.
+
+  Args:
+    scenario: The scenario in which the number of sandwiches is computed.
+    visits: List of global visits.
+    arrival_visit_index: Index of the first visit to the parking location.
+    departure_visit_index: Index of the last visit from the parking location.
+    time_delta: The amount of shift to be applied on the start and the end.
+
+  Returns:
+    A boolean value indicating if there is any violation of requested time
+    windows for pick up or deliveries.
+  """
+  # Check all the visits between arrival and departure visits.
+  for visit_index in range(arrival_visit_index, departure_visit_index + 1):
+    visit = visits[visit_index]
+    visit_request = cfr_json.get_visit_request(scenario.model, visit)
+    time_windows = visit_request.get("timeWindows")
+
+    # No violation since no time window is specified.
+    if time_windows is None or not time_windows:
+      continue
+
+    # Check if any of the specified time windows is violated.
+    new_start_time = cfr_json.parse_time_string(visit["startTime"]) + time_delta
+    for time_window in time_windows:
+      if (window_start_time := time_window.get("startTime")) is not None:
+        if new_start_time < cfr_json.parse_time_string(window_start_time):
+          continue
+
+      if (window_end_time := time_window.get("endTime")) is not None:
+        if new_start_time > cfr_json.parse_time_string(window_end_time):
+          continue
+
+      # New start time is inside the time window.
+      break
+    else:
+      return True  # Didn't hit the break in any iteration.
+
+  return False
+
+
+def shuffle_and_check_violations(
+    scenario: Scenario,
+    vehicle_index: int,
+    parking_lot_shipment_list: Sequence[ParkingwiseShipmentDetails],
+    start: int,
+    end: int,
+) -> bool:
+  """Shuffle and detect violations of time window constaints.
+
+  In this function, we perform actual shuffling of slots and check if it results
+  in violation of any requested time windows for pickups and deliveries.
+
+  Args:
+    scenario: The scenario in which the number of sandwiches is computed.
+    vehicle_index: The index of the vehicle for which the number of sandwiches
+      is computed.
+    parking_lot_shipment_list: Contains a tuple having parking tag, shipment
+      list, arrival and departure visit index.
+    start: The index of the start slot in the parking lot shipment list which
+      needs to be shuffled for bringing different slots out of the same parking
+      lot next to each other.
+    end: The index of the end slot in the parking lot shipment list which needs
+      to be shuffled for bringing different slots out of the same parking lot
+      next to each other.
+
+  Returns:
+    A boolean value indicating if there is any violation of requested time
+    windows for pick up or deliveries.
+  """
+  route = scenario.routes[vehicle_index]
+  visits = cfr_json.get_visits(route)
+
+  shift_up_violation = False
+  shift_down_violation = False
+
+  # Reshuffle-1: Shift up the second visit after the first visit.
+  # This one checks violation where we are shifting the repeat slot after the
+  # first slot. e.g. 1a 2 3 1b --> 1a 1b 2 3
+
+  # Calculate the time spent at end parking lot.
+  duration_end_parking_lot = get_parking_departure_time(
+      route, parking_lot_shipment_list[end].departure_index
+  ) - get_parking_arrival_time(
+      route, parking_lot_shipment_list[end].arrival_index
+  )
+
+  # Check if the reshuffling causes time window violations in any of the slot.
+  for i in range(start, end):
+    arrival_visit_index = parking_lot_shipment_list[i].arrival_index
+    departure_visit_index = parking_lot_shipment_list[i].departure_index
+
+    if detect_violations(
+        scenario=scenario,
+        visits=visits,
+        arrival_visit_index=arrival_visit_index,
+        departure_visit_index=departure_visit_index,
+        time_delta=duration_end_parking_lot,
+    ):
+      shift_up_violation = True
+
+  # Check if the reshuffling causes time window violation for the end/repeat
+  # slot.
+  time_delta = get_parking_departure_time(
+      route=route,
+      departure_visit_index=parking_lot_shipment_list[
+          start - 1
+      ].departure_index,
+  ) - get_parking_arrival_time(
+      route=route,
+      arrival_visit_index=parking_lot_shipment_list[end].arrival_index,
+  )
+
+  if detect_violations(
+      scenario=scenario,
+      visits=visits,
+      arrival_visit_index=parking_lot_shipment_list[end].arrival_index,
+      departure_visit_index=parking_lot_shipment_list[end].departure_index,
+      time_delta=time_delta,
+  ):
+    shift_up_violation = True
+
+  # Reshuffle-2: Shift down the first block (start - 1) to end - 1 position
+  # and all blocks inbetween up by the duration of the first block.
+  # e.g. 1a, 2, 3, 1b --> 2, 3, 1a, 1b
+  duration_start_parking_lot = get_parking_arrival_time(
+      route, parking_lot_shipment_list[start - 1].arrival_index
+  ) - get_parking_departure_time(
+      route, parking_lot_shipment_list[start - 1].departure_index
+  )
+
+  # Check if the reshuffling causes time window violations in any of the slot.
+  for i in range(start, end):
+    if detect_violations(
+        scenario=scenario,
+        visits=visits,
+        arrival_visit_index=parking_lot_shipment_list[i].arrival_index,
+        departure_visit_index=parking_lot_shipment_list[i].departure_index,
+        time_delta=duration_start_parking_lot,
+    ):
+      shift_down_violation = True
+
+  # Check if the reshuffling causes time window violation for the first slot.
+  # 1(e) 2 3 1 --> 2 3 1(e) 1
+  time_delta = get_parking_arrival_time(
+      route=route,
+      arrival_visit_index=parking_lot_shipment_list[end].arrival_index,
+  ) - get_parking_departure_time(
+      route=route,
+      departure_visit_index=parking_lot_shipment_list[
+          start - 1
+      ].departure_index,
+  )
+
+  if detect_violations(
+      scenario=scenario,
+      visits=visits,
+      arrival_visit_index=parking_lot_shipment_list[start - 1].arrival_index,
+      departure_visit_index=parking_lot_shipment_list[
+          start - 1
+      ].departure_index,
+      time_delta=time_delta,
+  ):
+    shift_down_violation = True
+
+  return shift_up_violation and shift_down_violation
+
+
+def analyse_bad_sandwiches(
+    scenario: Scenario, vehicle_index: int
+) -> tuple[int, Sequence[str]]:
+  """Analyse parking sandwiches to detect good and bad sandwiches.
+
+  The basic ideas here is to shiffle slots such that the slots to the same
+  parking lot can be combined and then check if there is any violation of
+  the shipment time windows specified in the visit requests in all the affected
+  slots.
+
+  For example, if the vehicle is visiting the following parking lots in the
+  order: 1 (e), 2, 3, 1 (l).  Here we marked 1(e) to denote the fist visit to
+  the parking lot 1 and 1(l) is the later visit to the same parking lot. In
+  this case, we consider two shufflings: 1(e), 1(l), 2, 3 and 2, 3, 1(e), 1(l).
+  We discard two more shufflings: 1(l), 1(e), 2, 3 and 2, 3, 1(l), 1(e) as
+  there are more chances of the time window constraints specified in 1(e) and
+  1(l) respectively in these shufflings.
+
+  For shuffling: 1(e), 1(l), 2, 3, we check for constraint violations in 1(l),
+  2 and 3. And for shuffling: 2, 3, 1(e), 1(l), we check for constraint
+  violations in 2, 3 and 1(e).
+
+  Args:
+    scenario: The scenario in which the number of sandwiches is computed.
+    vehicle_index: The index of the vehicle for which the number of sandwiches
+      is computed.
+
+  Returns:
+    A list of parking tag with bad sandwich.
+  """
+  num_sandwiches = 0
+  bad_sandwich_tags = []
+  parking_wise_shipment_list = []
+  visited_parking_dict = {}
+
+  for (
+      parking_tag,
+      _,
+      group_shipments,
+      arrival_visit_index,
+      departure_visit_index,
+  ) in group_global_visits(scenario, vehicle_index):
+    shipment_pos = len(parking_wise_shipment_list)
+    parking_wise_shipment_list.append(
+        ParkingwiseShipmentDetails(
+            parking_tag,
+            group_shipments,
+            arrival_visit_index,
+            departure_visit_index,
+        )
+    )
+
+    if parking_tag is None:
+      # This is a shipment delivered directly. These never make a sandwich.
+      continue
+
+    previous_visits = visited_parking_dict.get(parking_tag)
+    if previous_visits is None:
+      # The first visit (of this vehicle) to this parking.
+      visited_parking_dict[parking_tag] = [shipment_pos]
+    else:
+      # This vehicle already visited this parking, this is a sandwich. We check
+      # whether the current visit makes a bad sandwich in conjunction with any
+      # of the previous visits.
+      num_sandwiches += 1
+      for previous_visit in previous_visits:
+        if not shuffle_and_check_violations(
+            scenario,
+            vehicle_index,
+            parking_wise_shipment_list,
+            previous_visit + 1,
+            shipment_pos,
+        ):
+          bad_sandwich_tags.append(parking_tag)
+          # Once we discover that this visit is part of one bad sandwich, we do
+          # not need to look at the others.
+          break
+      previous_visits.append(shipment_pos)
+
+  return num_sandwiches, bad_sandwich_tags
 
 
 def get_num_sandwiches(
@@ -1013,6 +1320,27 @@ def consume_suffix(text: str, suffix: str) -> str | None:
   return text[: -len(suffix)]
 
 
+def get_vehicle_negative_wait_hours(
+    route: cfr_json.ShipmentRoute,
+) -> datetime.timedelta:
+  """Returns the amount of negative wait durations along the route.
+
+  Args:
+    route: The route in which this is computed.
+
+  Returns:
+    The total amount of negative wait duration. The returned value is
+    non-negative, i.e. it is the absolute value of the sum of negative wait
+    durations.
+  """
+  negative_wait_duration = datetime.timedelta()
+  for transition in cfr_json.get_transitions(route):
+    wait_duration = transition.get("waitDuration", "0s")
+    if wait_duration.startswith("-"):
+      negative_wait_duration -= cfr_json.parse_duration_string(wait_duration)
+  return negative_wait_duration
+
+
 def get_vehicle_wait_hours(route: cfr_json.ShipmentRoute) -> datetime.timedelta:
   """Returns the amount of time the vehicle spends waiting along the route."""
   # NOTE(ondrasej): The two-step routing library did not always fill in metrics.
@@ -1053,6 +1381,241 @@ def get_vehicle_travel_hours(
     travel_time += cfr_json.parse_duration_string(travel_duration)
 
   return travel_time
+
+
+@dataclasses.dataclass(frozen=True)
+class VisitTurnAngle:
+  """Contains information about the turn angle at a given visit on a route.
+
+  The angle is computed as the interior angle between the last segment of the
+  inbound polyline and the first segment of the outbound polyline. Turns that
+  are between two segments of the same polyline are not considered.
+
+  When the two segmetns do not share an end vertex, the angle is computed as
+  the angle between the two straight lines created by extending the two segments
+  to infinity.
+
+  Attributes:
+    route_index: The route where the angle is reported.
+    visit_index: The visit at which the angle happens.
+    angle_degrees: The interior angle between the two segments, in degrees.
+  """
+
+  route_index: int
+  visit_index: int
+  angle_degrees: float
+
+
+def _turn_angle(vec1: tuple[float, float], vec2: tuple[float, float]) -> float:
+  """Computes the (oriented) angle between vec1 and vec2, in radians."""
+  return math.atan2(
+      vec2[1] * vec1[0] - vec2[0] * vec1[1],
+      vec2[0] * vec1[0] + vec2[1] * vec1[1],
+  )
+
+
+def _get_first_segment(
+    polyline: Sequence[cfr_json.LatLng],
+) -> tuple[float, float]:
+  """Returns the first non-empty segment of `polyline`.
+
+  Takes polyline[0] and the first point that is different from polyline[0] and
+  returns the 2D vector between them. Treats the latitude and longitude as
+  cartesian coordinates, and returns the vector between the first point and the
+  second point of the polyline.
+
+  Args:
+    polyline: The polyline to extract the vector from.
+
+  Returns:
+    The first non-empty segment of the polyline in the form of a tuple
+    (lat_delta, lng_delta).
+
+  Raises:
+    ValueError: When the polyline does not contain two different points.
+  """
+  start = polyline[0]
+  for i in range(1, len(polyline)):
+    if polyline[i] != start:
+      return (
+          polyline[i]["latitude"] - start["latitude"],
+          polyline[i]["longitude"] - start["longitude"],
+      )
+  raise ValueError(f"The polyline has zero length: {polyline}")
+
+
+def get_visit_turn_angles(
+    model: cfr_json.ShipmentModel,
+    route: cfr_json.ShipmentRoute,
+    threshold_angle_degrees: float = 0.0,
+) -> Iterable[VisitTurnAngle]:
+  """Computes the turn angle at each visit location of the route.
+
+  The turn angles are computed as the angle between the last non-empty segment
+  of the inbound polyline and the first non-empty segment of the outbound
+  polyline:
+  (1) Each angle is reported at most once (if it passes the threshold), along
+      with the visit right after the ibound polyline.
+  (2) When the start/end of the two polylines are not at the same coordinates,
+      the angle is computed between the two straight lines defined by their
+      non-empty segments.
+  (3) The angle is not reported for visits where the arrival location and the
+      departure location are different, assuming any turn angle there is
+      intentional and expected.
+  (3) Visits where either the inbound or the outbound polyline can't be detected
+      are not reported.
+
+  In the computation, we treat latlngs as cartesian coordinates, which may lead
+  to some imprecision. However, this imprecision is not significant for the
+  intended purpose of this function (u-turn detection).
+
+  Args:
+    model: The model in which the turn angles are computed.
+    route: The route in which the turn angles are computed.
+    threshold_angle_degrees: A threshold, in degrees. Only turn angles greater
+      or equal to this threshold are returned.
+
+  Yields:
+    Turn angle information for the visits of `route`. Only visits where the
+    angle is greater or equal to the threshold are yielded.
+  """
+  threshold_angle_radians = math.pi * threshold_angle_degrees / 180
+  route_index = route.get("vehicleIndex", 0)
+  visits = cfr_json.get_visits(route)
+  visit_index = 0
+  num_visits = len(visits)
+  while visit_index < num_visits:
+    visit = visits[visit_index]
+    if cfr_json.has_different_arrival_and_departure_waypoints(
+        cfr_json.get_visit_request(model, visit)
+    ):
+      # Skip visits where the arrival and departure coordinates are different.
+      visit_index += 1
+      continue
+
+    _, polyline_in = cfr_json.get_adjacent_encoded_polyline(
+        model, route, visit_index, inbound=True, allow_single_point=False
+    )
+    if polyline_in is None:
+      visit_index += 1
+      continue
+    out_visit_index, polyline_out = cfr_json.get_adjacent_encoded_polyline(
+        model, route, visit_index, inbound=False, allow_single_point=False
+    )
+    if polyline_out is None:
+      visit_index = out_visit_index + 1
+      continue
+
+    segment_out = _get_first_segment(cfr_json.decode_polyline(polyline_out))
+    reverse_segment_in = _get_first_segment(
+        tuple(reversed(cfr_json.decode_polyline(polyline_in)))
+    )
+    angle = math.pi - math.fabs(_turn_angle(segment_out, reverse_segment_in))
+    if angle > threshold_angle_radians:
+      yield VisitTurnAngle(
+          route_index=route_index,
+          visit_index=visit_index,
+          angle_degrees=180 * angle / math.pi,
+      )
+    visit_index = out_visit_index + 1
+
+
+@dataclasses.dataclass(frozen=True)
+class VisitWarpDistance:
+  """Contains information about one warp point in a scenario.
+
+  Attributes:
+    route_index: The index of the route where the warp point happened.
+    visit_index: The index of the visit where the warp point happened.
+    warp_distance_meters: The warped distance.
+    arrival_latlng: The coordinates of the arrival location according to the
+      polylines.
+    departure_latlng: The coordinates of the departure location according to the
+      polylines.
+  """
+
+  route_index: int
+  visit_index: int
+  warp_distance_meters: float
+  arrival_latlng: cfr_json.LatLng
+  departure_latlng: cfr_json.LatLng
+
+
+def get_visit_warp_distances(
+    model: cfr_json.ShipmentModel,
+    route: cfr_json.ShipmentRoute,
+    threshold_meters: float = 0.0,
+) -> Iterable[VisitWarpDistance]:
+  """Computes "warp distance" at each visit location of the route.
+
+  The warp distance is the distance between the last point of the inbound
+  polyline and the first point of the outbound polyline:
+  (1) Each warp distance is reported at most once (if it passes the threshold),
+      along the visit right after the inbound polyline. Additional visits at the
+      same coordinates do not count.
+  (2) The distance is not computed when the arrival location and the departure
+      location for the visit request are both explicitly provided, and they are
+      different, assuming the warping is intentional and expected.
+  (3) Visits where either the inbound or the outbound polyline can't be detected
+      are not reported.
+
+  The distance is computed assuming that the Earth is a sphere with a radius
+  corresponding to the average radius of the actual Earth. This may lead to some
+  imprecision, but the imprecision is negligible for the intended purpose of
+  this code.
+
+  Args:
+    model: The model in which the detection is done.
+    route: The route for which warp points are detected.
+    threshold_meters: The threshold for the detection. A warp point is reported
+      only when the distance of the two points is greater than this threshold.
+
+  Yields:
+    A (possibly empty) sequence of visit indices on the route that create a warp
+    point.
+  """
+  route_index = route.get("vehicleIndex", 0)
+  visits = cfr_json.get_visits(route)
+  num_visits = len(visits)
+  visit_index = 0
+  while visit_index < num_visits:
+    visit = visits[visit_index]
+    if cfr_json.has_different_arrival_and_departure_waypoints(
+        cfr_json.get_visit_request(model, visit)
+    ):
+      # Visits where the arrival and departure are intentionally at different
+      # locations can't create a warp point.
+      visit_index += 1
+      continue
+
+    # Find the inbound and outbound polylines of the current visit. These may
+    # come from other transitions if there are multiple visits at the same
+    # location.
+    _, polyline_in = cfr_json.get_adjacent_encoded_polyline(
+        model, route, visit_index, inbound=True
+    )
+    if polyline_in is None:
+      visit_index += 1
+      continue
+    out_visit_index, polyline_out = cfr_json.get_adjacent_encoded_polyline(
+        model, route, visit_index, inbound=False
+    )
+    if polyline_out is None:
+      visit_index = out_visit_index + 1
+      continue
+
+    in_latlng = cfr_json.decode_polyline(polyline_in)[-1]
+    out_latlng = cfr_json.decode_polyline(polyline_out)[0]
+    distance_meters = cfr_json.distance_meters(in_latlng, out_latlng)
+    if distance_meters > threshold_meters:
+      yield VisitWarpDistance(
+          route_index=route_index,
+          visit_index=visit_index,
+          warp_distance_meters=distance_meters,
+          arrival_latlng=in_latlng,
+          departure_latlng=out_latlng,
+      )
+    visit_index = out_visit_index + 1
 
 
 def get_percentile_visit_time(

@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import {
   ChangeDetectionStrategy,
@@ -18,17 +25,14 @@ import {
 } from '@angular/core';
 import { select, Store } from '@ngrx/store';
 import { BehaviorSubject, Observable, of } from 'rxjs';
-import { map, mergeMap, switchMap, take } from 'rxjs/operators';
+import { map, mergeMap, switchMap } from 'rxjs/operators';
 import * as RoutesChartActions from 'src/app/core/actions/routes-chart.actions';
 import { PreSolveVehicleActions } from 'src/app/core/actions';
 import {
   PointOfInterest,
   ShipmentRoute,
-  PointOfInterestStartDrag,
   Timeline,
   Vehicle,
-  PointOfInterestClick,
-  PointOfInterestTimelineOverlapBegin,
   IConstraintRelaxation,
   ChangedVisits,
 } from 'src/app/core/models';
@@ -39,17 +43,15 @@ import * as fromTimeline from 'src/app/core/selectors/timeline.selectors';
 import ShipmentRouteSelectors from 'src/app/core/selectors/shipment-route.selectors';
 import * as fromVehicle from 'src/app/core/selectors/vehicle.selectors';
 import * as fromRoot from 'src/app/reducers';
-import * as PoiActions from 'src/app/core/actions/points-of-interest.actions';
 import RequestSettingsSelectors from 'src/app/core/selectors/request-settings.selectors';
 import VisitSelectors from 'src/app/core/selectors/visit.selectors';
-import { ValidationService } from 'src/app/core/services';
+import { MapService, ValidationService } from 'src/app/core/services';
 import { PostSolveMetricsActions } from 'src/app/core/actions';
 import { Router } from '@angular/router';
 import { Page } from 'src/app/core/models';
-import { durationSeconds, getEntityName } from 'src/app/util';
+import { durationSeconds } from 'src/app/util';
 import * as fromDispatcher from 'src/app/core/selectors/dispatcher.selectors';
-import { combineLatest } from 'rxjs';
-import * as fromVehicleOperator from 'src/app/core/selectors/vehicle-operator.selectors';
+import { NumberFilterParams } from 'src/app/shared/models';
 
 @Component({
   selector: 'app-routes-row',
@@ -60,12 +62,8 @@ import * as fromVehicleOperator from 'src/app/core/selectors/vehicle-operator.se
 export class RoutesRowComponent implements OnChanges, OnInit, OnDestroy {
   @Input() route: ShipmentRoute;
 
-  isDragging$: Observable<boolean>;
-  dragVisitIds$: Observable<number[]>;
-  currentOverlapId$: Observable<number>;
   selected$: Observable<boolean>;
   vehicle$: Observable<Vehicle>;
-  vehicleOperator$: Observable<string>;
   shipmentCount$: Observable<number>;
   timeline$: Observable<Timeline>;
   duration$: Observable<[Long, Long]>;
@@ -77,12 +75,14 @@ export class RoutesRowComponent implements OnChanges, OnInit, OnDestroy {
   relaxationTimes$: Observable<Long[]>;
   timezoneOffset$: Observable<number>;
   changedVisits$: Observable<ChangedVisits>;
+  color$: Observable<string>;
   private readonly route$ = new BehaviorSubject<ShipmentRoute>(null);
 
   constructor(
     private router: Router,
     private store: Store<fromRoot.State>,
-    private validationService: ValidationService
+    private validationService: ValidationService,
+    private mapService: MapService
   ) {}
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -131,25 +131,6 @@ export class RoutesRowComponent implements OnChanges, OnInit, OnDestroy {
       )
     );
 
-    this.vehicleOperator$ = combineLatest([
-      this.route$,
-      this.store.pipe(select(fromVehicleOperator.selectAll)),
-      this.store.pipe(select(fromVehicleOperator.selectRequestedIds)),
-    ]).pipe(
-      take(1),
-      map(([route, selectAll, requestedIds]: any) => {
-        let vehicleOperatorLabels = '';
-        route.vehicleOperatorIndices?.forEach((anIndex) => {
-          const vehicleOperatorObj = selectAll.find((obj) => obj.id === requestedIds[anIndex]);
-          vehicleOperatorLabels =
-            vehicleOperatorLabels +
-            (vehicleOperatorLabels ? ',' : '') +
-            getEntityName(vehicleOperatorObj);
-        });
-        return vehicleOperatorLabels;
-      })
-    );
-
     this.shipmentCount$ = this.route$.pipe(
       switchMap((route) =>
         this.store.pipe(
@@ -195,12 +176,6 @@ export class RoutesRowComponent implements OnChanges, OnInit, OnDestroy {
     );
 
     this.timezoneOffset$ = this.store.pipe(select(fromConfig.selectTimezoneOffset));
-    this.isDragging$ = this.store.pipe(select(fromPointsOfInterest.selectIsDragging));
-    this.currentOverlapId$ = this.store.pipe(select(fromPointsOfInterest.selectOverlapTimelineId));
-    this.dragVisitIds$ = this.store.pipe(
-      select(fromPointsOfInterest.selectDragVisitsToEdit),
-      map((visits) => visits.map((visit) => visit.id))
-    );
     this.relaxationTimes$ = this.store.pipe(
       select(
         RequestSettingsSelectors.selectGlobalAndVehicleConstraintRelaxationsForVehicle(
@@ -216,6 +191,13 @@ export class RoutesRowComponent implements OnChanges, OnInit, OnDestroy {
       })
     );
     this.range$ = this.store.pipe(select(RoutesChartSelectors.selectRange));
+
+    this.color$ = this.route$.pipe(
+      switchMap((route) =>
+        this.store.pipe(select(RoutesChartSelectors.selectRouteColor(route.id)))
+      ),
+      map((color) => color?.hex)
+    );
   }
 
   ngOnDestroy(): void {
@@ -227,25 +209,6 @@ export class RoutesRowComponent implements OnChanges, OnInit, OnDestroy {
     this.store.dispatch(action({ routeId: this.route.id }));
   }
 
-  onDragStart(dragStart: PointOfInterestStartDrag): void {
-    this.store.dispatch(PoiActions.startDrag({ dragStart }));
-  }
-
-  onTimelineEnter(overlap: PointOfInterestTimelineOverlapBegin): void {
-    this.store.dispatch(PoiActions.beginTimelineOverlap({ overlap }));
-  }
-
-  onTimelineLeave(): void {
-    this.store.dispatch(PoiActions.endTimelineOverlap());
-  }
-
-  onPointOfInterestClick(pointOfInterestClick: PointOfInterestClick): void {
-    if (pointOfInterestClick.visitId < 1) {
-      return;
-    }
-    this.store.dispatch(RoutesChartActions.editVisit({ visitId: pointOfInterestClick.visitId }));
-  }
-
   onEditVehicle(vehicleId: number): void {
     this.store.dispatch(PreSolveVehicleActions.editVehicle({ vehicleId }));
   }
@@ -255,11 +218,44 @@ export class RoutesRowComponent implements OnChanges, OnInit, OnDestroy {
     this.router.navigateByUrl('/' + Page.RoutesMetadata, { skipLocationChange: true });
   }
 
-  onMouseEnterVisit(id: number): void {
-    this.store.dispatch(RoutesChartActions.mouseEnterVisitRequest({ id }));
+  onMouseEnterVisitIds(ids: number[]): void {
+    this.store.dispatch(RoutesChartActions.mouseEnterVisits({ ids }));
   }
 
-  onMouseExitVisit(): void {
-    this.store.dispatch(RoutesChartActions.mouseExitVisitRequest());
+  onMouseExitVisits(): void {
+    this.store.dispatch(RoutesChartActions.mouseExitVisits());
+  }
+
+  onClickVisitIds(ids: number[]): void {
+    this.store.dispatch(
+      RoutesChartActions.setFilters({
+        filters: [
+          {
+            id: 'routeId',
+            label: `Route ID = ${this.route.id}`,
+            params: {
+              operation: '=',
+              value: this.route.id,
+            } as NumberFilterParams,
+          },
+        ],
+      })
+    );
+
+    this.store
+      .pipe(select(VisitSelectors.selectVisitRequestsByIds(ids)))
+      .subscribe((visitRequests) => {
+        const bounds = new google.maps.LatLngBounds();
+        visitRequests.forEach((vr) =>
+          bounds.extend({
+            lat: vr.arrivalWaypoint.location.latLng.latitude,
+            lng: vr.arrivalWaypoint.location.latLng.longitude,
+          })
+        );
+        this.mapService.setBounds(bounds, false);
+        if (this.mapService.map.getZoom() > 16) {
+          this.mapService.map.setZoom(16);
+        }
+      });
   }
 }

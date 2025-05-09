@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import {
@@ -16,10 +23,15 @@ import {
   Component,
   ContentChild,
   ElementRef,
+  EventEmitter,
+  HostListener,
+  Inject,
   Input,
   NgZone,
   OnChanges,
   OnDestroy,
+  OnInit,
+  Output,
   SimpleChanges,
   TemplateRef,
   ViewChild,
@@ -34,6 +46,7 @@ import {
   GanttRowDirective,
 } from '../../directives';
 import { ChartColumnLabelFormatter, day, UnitStep } from '../../models';
+import { DOCUMENT } from '@angular/common';
 
 interface GanttColumn {
   label: string;
@@ -47,13 +60,23 @@ interface GanttColumn {
   encapsulation: ViewEncapsulation.None,
 })
 export class GanttChartComponent<T = any>
-  implements OnChanges, AfterViewInit, AfterViewChecked, OnDestroy
+  implements OnInit, OnChanges, AfterViewInit, AfterViewChecked, OnDestroy
 {
+  @ViewChild('headerOverlay') headerOverlay: ElementRef;
+  @ViewChild('rowColumnHeader') rowColumnHeader: ElementRef;
+  @ViewChild(CdkVirtualScrollViewport, { static: true }) viewPort: CdkVirtualScrollViewport;
+  @ViewChild('simulatorHandleContainer') simulatorHandleContainer: ElementRef;
+
   @Input() value: T[];
   @Input() range: number = day.ranges[day.defaultRangeIndex].value;
   @Input() marker?: number;
   @Input() unitStep: UnitStep = day.ranges[day.defaultRangeIndex].unitStep;
   @Input() timezoneOffset: number;
+  @Input() travelSimulatorActive: boolean;
+  @Input() travelSimulatorValue: number;
+  @Input() columnLabelFormatter: ChartColumnLabelFormatter = day.columnLabelFormatter;
+  @Input() trackBy: (index: number, item: T) => any = (index) => index;
+  @Output() dragSimulatorHandle = new EventEmitter<number>();
 
   @ContentChild(GanttColumnHeaderDirective, { static: true })
   columnHeaderDir: GanttColumnHeaderDirective;
@@ -84,20 +107,23 @@ export class GanttChartComponent<T = any>
 
   hasMarker = false;
   markerPercent = 0;
+
+  hasTravelSimulator = false;
+  travelSimulatorPercent = 0;
+  isDraggingSimulator = false;
+  dragPosition: [number, number];
+
   columns: GanttColumn[] = [];
-  @ViewChild(CdkVirtualScrollViewport, { static: true }) viewPort: CdkVirtualScrollViewport;
   viewPortWidth = 0;
-  @ViewChild('headerOverlay') headerOverlay: ElementRef;
-  @ViewChild('rowColumnHeader') rowColumnHeader: ElementRef;
 
   get inverseTranslation(): string {
     return this.viewPort ? -this.viewPort.getOffsetToRenderedContentStart() + 'px' : '0';
   }
 
-  @Input() columnLabelFormatter: ChartColumnLabelFormatter = day.columnLabelFormatter;
-  @Input() trackBy: (index: number, item: T) => any = (index) => index;
+  private onMouseMoveFn = this.onMouseMove.bind(this) as (event: MouseEvent) => void;
 
   constructor(
+    @Inject(DOCUMENT) private document: Document,
     private domSanitizer: DomSanitizer,
     private zone: NgZone,
     private changeDetector: ChangeDetectorRef,
@@ -109,11 +135,33 @@ export class GanttChartComponent<T = any>
     return this.domSanitizer.bypassSecurityTrustStyle(left);
   }
 
+  getSimulatorHandleLeft(el: HTMLElement): SafeStyle {
+    const left = 'calc(' + this.travelSimulatorPercent + '% - ' + el.clientWidth / 2 + 'px)';
+    return this.domSanitizer.bypassSecurityTrustStyle(left);
+  }
+
+  ngOnInit(): void {
+    this.zone.runOutsideAngular(() => {
+      this.document.addEventListener('mousemove', this.onMouseMoveFn);
+    });
+  }
+
   ngOnChanges(changes: SimpleChanges): void {
     if (changes.marker || changes.range) {
       this.hasMarker = this.marker != null && this.marker >= 0 && this.marker <= this.range;
       this.markerPercent = this.hasMarker ? (100 * this.marker) / this.range : 0;
     }
+    if (changes.travelSimulatorActive || changes.travelSimulatorValue || changes.range) {
+      this.hasTravelSimulator =
+        this.travelSimulatorActive &&
+        this.travelSimulatorValue != null &&
+        this.travelSimulatorValue >= 0 &&
+        this.travelSimulatorValue <= this.range;
+      this.travelSimulatorPercent = this.hasTravelSimulator
+        ? (100 * this.travelSimulatorValue) / this.range
+        : 0;
+    }
+
     if ((changes.range || changes.unitStep || changes.columnLabelFormatter) && this.initialized) {
       this.columns = this.getColumns();
     }
@@ -125,6 +173,7 @@ export class GanttChartComponent<T = any>
     this.resizeObserver = new ResizeObserver((entries) => {
       if (entries.length) {
         this.zone.run(() => {
+          this.viewPort.checkViewportSize();
           this.viewPortWidth = entries[0].target.clientWidth;
           this.changeDetector.markForCheck();
         });
@@ -139,6 +188,39 @@ export class GanttChartComponent<T = any>
 
   ngOnDestroy(): void {
     this.resizeObserver?.disconnect();
+    this.document.removeEventListener('mousemove', this.onMouseMoveFn);
+  }
+
+  onSimulatorMouseDown(event: MouseEvent): void {
+    if (event.button !== 0) {
+      return;
+    }
+    this.isDraggingSimulator = true;
+    this.dragPosition = [event.x, event.y];
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  @HostListener('document:mouseup', ['$event'])
+  onMouseUp(_event: MouseEvent): void {
+    this.isDraggingSimulator = false;
+  }
+
+  onMouseMove(event: MouseEvent): void {
+    if (!this.isDraggingSimulator) {
+      return;
+    }
+
+    const bounds: DOMRect = this.simulatorHandleContainer.nativeElement.getBoundingClientRect();
+    const relativeX = event.x - bounds.left;
+
+    if (relativeX < 0 || relativeX > bounds.width) {
+      return;
+    }
+
+    this.zone.run(() => {
+      this.dragSimulatorHandle.emit((relativeX / bounds.width) * this.range);
+    });
   }
 
   private calculateDimensions(): void {

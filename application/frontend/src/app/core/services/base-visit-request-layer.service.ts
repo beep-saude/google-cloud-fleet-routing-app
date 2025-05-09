@@ -1,11 +1,18 @@
-/**
- * @license
- * Copyright 2022 Google LLC
- *
- * Use of this source code is governed by an MIT-style
- * license that can be found in the LICENSE file or at
- * https://opensource.org/licenses/MIT.
- */
+/*
+Copyright 2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 import { NgZone } from '@angular/core';
 import { GoogleMapsOverlay } from '@deck.gl/google-maps';
@@ -21,7 +28,7 @@ export abstract class BaseVisitRequestLayer {
     protected store: Store<State>,
     protected zone: NgZone
   ) {
-    this.getIconMapping();
+    this.iconMapping = this.createIconMapping(this.iconSize);
   }
   protected abstract layerId: string;
   get visible(): boolean {
@@ -35,15 +42,15 @@ export abstract class BaseVisitRequestLayer {
     this.gLayer.setMap(this._visible ? this.mapService.map : null);
   }
 
-  private gLayer: GoogleMapsOverlay = new GoogleMapsOverlay({});
-  private layer: IconLayer = new IconLayer({});
-  private selectedDataLayer: IconLayer = new IconLayer({});
-  private mouseOverLayer: IconLayer = new IconLayer({});
+  protected gLayer: GoogleMapsOverlay = new GoogleMapsOverlay({});
+  protected layer: IconLayer = new IconLayer({});
+  protected selectedDataLayer: IconLayer = new IconLayer({});
+  protected mouseOverLayer: IconLayer = new IconLayer({});
 
   private _visible: boolean;
 
-  readonly iconSize = [64, 44];
-  private iconMapping = {};
+  readonly iconSize: [number, number] = [64, 44];
+  protected iconMapping = {};
   readonly defaultColor = 'blue-grey';
   readonly defaultSelectedColor = 'red';
 
@@ -93,19 +100,49 @@ export abstract class BaseVisitRequestLayer {
     'pickup',
   ];
 
-  private getIconMapping(): void {
+  protected createIconMapping(iconSize: [number, number]): any {
+    const mapping = {};
     // dynamically create icon mapping based on sprite
     for (let i = 0; i < this.iconMappingOrder.length; i++) {
       const icon = this.iconMappingOrder[i];
-      this.iconMapping[icon] = {
+      mapping[icon] = {
         x: 0,
-        y: this.iconSize[1] * i,
-        width: this.iconSize[0],
+        y: iconSize[1] * i,
+        width: iconSize[0],
         // clip height by 1 pixel to reduce a noticeable artifact that's more
         // prominent on deliveries when zoomed out
-        height: this.iconSize[1] - 1,
+        height: iconSize[1] - 1,
       };
     }
+    return mapping;
+  }
+
+  protected getIconMapping(): any {
+    return this.iconMapping;
+  }
+
+  protected getIconAtlas(): string {
+    return './assets/images/dropoff_pickup_sprite.png';
+  }
+
+  protected getSizeScale(): number {
+    return 1.75;
+  }
+
+  protected getIcon(data): string {
+    const color = (data.color && data.color.name) || this.defaultSelectedColor;
+    const key = data.pickup ? `pickup-${color}` : `dropoff-${color}`;
+    return key in this.iconMapping
+      ? key
+      : data.pickup
+      ? `pickup-${this.defaultSelectedColor}`
+      : `dropoff-${this.defaultSelectedColor}`;
+  }
+
+  protected updateLayers(): void {
+    this.gLayer.setProps({
+      layers: [this.layer, this.selectedDataLayer, this.mouseOverLayer],
+    });
   }
 
   abstract getDefaultIconFn(data): string;
@@ -113,14 +150,11 @@ export abstract class BaseVisitRequestLayer {
     this.layer = new IconLayer({
       id: this.layerId,
       data,
-      iconAtlas: './assets/images/dropoff_pickup_sprite.png',
-      iconMapping: this.iconMapping,
+      iconAtlas: this.getIconAtlas(),
+      iconMapping: this.getIconMapping(),
       getIcon: (d) => this.getDefaultIconFn(d),
-      sizeUnits: 'meters',
-      sizeMinPixels: 13.5,
-      sizeMaxPixels: 43.5,
-      getSize: 13.5,
-      sizeScale: 10,
+      getSize: 10,
+      sizeScale: this.getSizeScale(),
       getPosition: (d) => d.arrivalPosition,
       pickable: true,
       onHover: ({ object }) => {
@@ -132,61 +166,36 @@ export abstract class BaseVisitRequestLayer {
         });
       },
     });
-    this.gLayer.setProps({ layers: [this.layer, this.selectedDataLayer, this.mouseOverLayer] });
+    this.updateLayers();
   }
 
   protected onDataSelected(data): void {
     this.selectedDataLayer = new IconLayer({
       id: this.layerId + '-selected',
       data,
-      iconAtlas: './assets/images/dropoff_pickup_sprite.png',
-      iconMapping: this.iconMapping,
-      getIcon: (d) => {
-        const color = (d.color && d.color.name) || this.defaultSelectedColor;
-        const key = d.pickup ? `pickup-${color}` : `dropoff-${color}`;
-        return key in this.iconMapping
-          ? key
-          : d.pickup
-          ? `pickup-${this.defaultSelectedColor}`
-          : `dropoff-${this.defaultSelectedColor}`;
-      },
-      sizeUnits: 'meters',
-      sizeMinPixels: 13.5,
-      sizeMaxPixels: 43.5,
-      getSize: 13.5,
-      sizeScale: 10,
+      iconAtlas: this.getIconAtlas(),
+      iconMapping: this.getIconMapping(),
+      getIcon: (d) => this.getIcon(d),
+      getSize: 10,
+      sizeScale: this.getSizeScale(),
       getPosition: (d) => d.arrivalPosition,
       pickable: false,
     });
-    this.gLayer.setProps({ layers: [this.layer, this.selectedDataLayer, this.mouseOverLayer] });
+    this.updateLayers();
   }
 
   protected onDataMouseOver(data): void {
     this.mouseOverLayer = new IconLayer({
       id: this.layerId + '-mouseOver',
       data,
-      iconAtlas: './assets/images/dropoff_pickup_sprite.png',
-      iconMapping: this.iconMapping,
-      getIcon: (d) => {
-        if (!d.selected) {
-          return this.getDefaultIconFn(d);
-        }
-        const color = (d.color && d.color.name) || this.defaultSelectedColor;
-        const key = d.pickup ? `pickup-${color}` : `dropoff-${color}`;
-        return key in this.iconMapping
-          ? key
-          : d.pickup
-          ? `pickup-${this.defaultSelectedColor}`
-          : `dropoff-${this.defaultSelectedColor}`;
-      },
-      sizeUnits: 'meters',
-      sizeMinPixels: 21,
-      sizeMaxPixels: 61,
-      getSize: 21,
-      sizeScale: 10,
+      iconAtlas: this.getIconAtlas(),
+      iconMapping: this.getIconMapping(),
+      getIcon: (d) => (d.selected ? this.getIcon(d) : this.getDefaultIconFn(d)),
+      getSize: 13,
+      sizeScale: this.getSizeScale(),
       getPosition: (d) => d.arrivalPosition,
       pickable: false,
     });
-    this.gLayer.setProps({ layers: [this.layer, this.selectedDataLayer, this.mouseOverLayer] });
+    this.updateLayers();
   }
 }

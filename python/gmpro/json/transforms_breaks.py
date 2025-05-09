@@ -87,7 +87,7 @@ The mini-language is intended to be used through the command-line flags of the
 request transformation script `transform_request.py`.
 """
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 import copy
 import dataclasses
 import datetime
@@ -163,6 +163,9 @@ class BreakTransformRule:
       "depot", the break is at the start waypoint of the vehicle; otherwise, the
       value must be a valid Waypoint JSON object, and it will be used as the
       location of the break. The break request itself is removed.
+    avoid_u_turns: When True, the visit request created for the break has
+      `avoidUTurns` set to True. Can be True only when `break_at_waypoint` is
+      not None.
     virtual_shipment_label: WHen the break request is transformed into a virtual
       shipment, this string is used as a base of the label of this shipment.
   """
@@ -172,6 +175,7 @@ class BreakTransformRule:
   actions: Sequence[BreakTransformAction]
   new_break_request: bool
   break_at_waypoint: cfr_json.Waypoint | str | None
+  avoid_u_turns: bool
   virtual_shipment_label: str
 
   def applies_to(
@@ -581,6 +585,7 @@ def compile_rules(rules: str) -> Sequence[BreakTransformRule]:
   actions: list[BreakTransformAction] = []
   new_break_request = False
   break_at_waypoint = None
+  avoid_u_turns = False
   virtual_shipment_label = "break"
 
   for component in _tokenize(rules):
@@ -590,8 +595,13 @@ def compile_rules(rules: str) -> Sequence[BreakTransformRule]:
           or selectors
           or context_selectors
           or break_at_waypoint
+          or avoid_u_turns
           or new_break_request
       ):
+        if avoid_u_turns and break_at_waypoint is None:
+          raise ValueError(
+              "`avoidUTurns` can be used only together with `location`"
+          )
         compiled_rules.append(
             BreakTransformRule(
                 selectors=selectors,
@@ -599,6 +609,7 @@ def compile_rules(rules: str) -> Sequence[BreakTransformRule]:
                 actions=actions,
                 new_break_request=new_break_request,
                 break_at_waypoint=break_at_waypoint,
+                avoid_u_turns=avoid_u_turns,
                 virtual_shipment_label=virtual_shipment_label,
             )
         )
@@ -607,6 +618,7 @@ def compile_rules(rules: str) -> Sequence[BreakTransformRule]:
         actions = []
         new_break_request = False
         break_at_waypoint = None
+        avoid_u_turns = False
         virtual_shipment_label = "break"
       continue
 
@@ -663,6 +675,12 @@ def compile_rules(rules: str) -> Sequence[BreakTransformRule]:
               f"Only '=' is allowed for `location`, found {str(component)!r}"
           )
         break_at_waypoint = component.value
+      case "avoidUTurns":
+        if component.operator is not None:
+          raise ValueError(
+              f"avoidUTurns does not accept operands, found {str(component)!r}"
+          )
+        avoid_u_turns = True
       case "virtualShipmentLabel":
         if component.operator != "=":
           raise ValueError(
@@ -707,6 +725,14 @@ def compile_rules(rules: str) -> Sequence[BreakTransformRule]:
   return compiled_rules
 
 
+@dataclasses.dataclass(frozen=True)
+class _BreakAtWaypoint:
+  waypoint: cfr_json.Waypoint | str
+  break_request: cfr_json.BreakRequest
+  label: str
+  avoid_u_turns: bool
+
+
 def transform_breaks_for_vehicle(
     compiled_rules: Sequence[BreakTransformRule],
     model: cfr_json.ShipmentModel,
@@ -719,9 +745,7 @@ def transform_breaks_for_vehicle(
   if (break_rule := vehicle.get("breakRule")) is not None:
     if (old_break_requests := break_rule.get("breakRequests")) is not None:
       break_requests = old_break_requests
-  breaks_at_waypoint: list[
-      tuple[cfr_json.Waypoint, cfr_json.BreakRequest, str]
-  ] = []
+  breaks_at_waypoint: list[_BreakAtWaypoint] = []
 
   logging.debug("Processing vehicle_index=%d", vehicle_index)
   for transform in compiled_rules:
@@ -758,11 +782,14 @@ def transform_breaks_for_vehicle(
         rule_new_requests = transform.apply_to(model, vehicle, request)
       if transform.break_at_waypoint:
         for new_request in rule_new_requests:
-          breaks_at_waypoint.append((
-              transform.break_at_waypoint,
-              new_request,
-              transform.virtual_shipment_label,
-          ))
+          breaks_at_waypoint.append(
+              _BreakAtWaypoint(
+                  waypoint=transform.break_at_waypoint,
+                  break_request=new_request,
+                  label=transform.virtual_shipment_label,
+                  avoid_u_turns=transform.avoid_u_turns,
+              )
+          )
       else:
         new_requests.extend(rule_new_requests)
 
@@ -789,11 +816,14 @@ def transform_breaks_for_vehicle(
       )
       if transform.break_at_waypoint:
         for new_request in rule_new_requests:
-          breaks_at_waypoint.append((
-              transform.break_at_waypoint,
-              new_request,
-              transform.virtual_shipment_label,
-          ))
+          breaks_at_waypoint.append(
+              _BreakAtWaypoint(
+                  waypoint=transform.break_at_waypoint,
+                  break_request=new_request,
+                  label=transform.virtual_shipment_label,
+                  avoid_u_turns=transform.avoid_u_turns,
+              )
+          )
       else:
         new_requests.extend(rule_new_requests)
 
@@ -811,27 +841,30 @@ def transform_breaks_for_vehicle(
     if shipments is None:
       shipments = []
       model["shipments"] = shipments
-    for src_waypoint, break_request, shipment_label_base in breaks_at_waypoint:
-      match src_waypoint:
+    for break_at_waypoint in breaks_at_waypoint:
+      match break_at_waypoint.waypoint:
         case "depot":
           # TODO(ondrasej): Also support `startLocation`.
           waypoint = vehicle["startWaypoint"]
         case value if isinstance(value, dict):
-          waypoint = cast(cfr_json.Waypoint, src_waypoint)
+          waypoint = cast(cfr_json.Waypoint, break_at_waypoint.waypoint)
         case _:
           raise ValueError("Unexpected waypoint value {waypoint!r}")
-      shipment_label = f"{shipment_label_base}, {vehicle_index=}"
+      shipment_label = f"{break_at_waypoint.label}, {vehicle_index=}"
       if vehicle_label := vehicle.get("label"):
         shipment_label += f", {vehicle_label=}"
-      shipment: cfr_json.Shipment = {
-          "deliveries": [{
-              "arrivalWaypoint": waypoint,
-              "duration": break_request["minDuration"],
-              "timeWindows": [{
-                  "startTime": break_request["earliestStartTime"],
-                  "endTime": break_request["latestStartTime"],
-              }],
+      delivery: cfr_json.VisitRequest = {
+          "arrivalWaypoint": waypoint,
+          "duration": break_at_waypoint.break_request["minDuration"],
+          "timeWindows": [{
+              "startTime": break_at_waypoint.break_request["earliestStartTime"],
+              "endTime": break_at_waypoint.break_request["latestStartTime"],
           }],
+      }
+      if break_at_waypoint.avoid_u_turns:
+        delivery["avoidUTurns"] = True
+      shipment: cfr_json.Shipment = {
+          "deliveries": [delivery],
           "label": shipment_label,
           "allowedVehicleIndices": [vehicle_index],
       }
@@ -846,3 +879,195 @@ def transform_breaks(
   vehicles = cfr_json.get_vehicles(model)
   for vehicle_index in range(len(vehicles)):
     transform_breaks_for_vehicle(compiled_rules, model, vehicle_index)
+
+
+def recreate_breaks_at_location(
+    model: cfr_json.ShipmentModel,
+    response: cfr_json.OptimizeToursResponse,
+    break_shipment_indices: Collection[int],
+) -> None:
+  """Transforms breaks at a location back into actual breaks.
+
+  This function can be used to "restore" breaks at a location that were
+  transformed into virtual shipments by `transform_breaks`. For each break at
+  a location, it does the following:
+  - creates a break request with the corresponding time window and min duration,
+  - creates a route break entry with the corresponding start time and duration,
+  - keeps the virtual shipment in the response, but sets its visit duration to
+    zero so that all invariants about durations and start times in the solution
+    still hold.
+  - updates route metrics and overall solution metrics.
+
+  Args:
+    model: The model in which the transformation is done. Modified in place.
+    response: The response in which the transformation is done. Modified in
+      place.
+    break_shipment_indices: Indices of shipments that were created as virtual
+      shipments for breaks at a location. Only these shipments are transformed
+      by the function. The collection should support efficient lookup, e.g. be a
+      set-like object.
+
+  Raises:
+    ValueError: When the input data is inconsistent, for example when one of the
+      shipments selected by `break_shipment_indices` doesn't look like a virtual
+      shipment for a break.
+  """
+  routes = cfr_json.get_routes(response)
+  vehicles = cfr_json.get_vehicles(model)
+  if len(routes) != len(vehicles):
+    raise ValueError(
+        f"The number of vehicles in the model ({len(vehicles)}) does not match"
+        f" the number of vehicles in the response ({len(routes)})"
+    )
+  transformed_break_duration = datetime.timedelta()
+  for vehicle_index, route in enumerate(routes):
+    vehicle = vehicles[vehicle_index]
+    new_breaks = []
+    new_break_requests = []
+    visits = cfr_json.get_visits(route)
+    transitions = cfr_json.get_transitions(route)
+    route_transformed_break_duration = datetime.timedelta()
+    for visit_index, visit in enumerate(visits):
+      shipment_index = visit.get("shipmentIndex", 0)
+      if shipment_index not in break_shipment_indices:
+        continue
+
+      transition_out = transitions[visit_index + 1]
+      visit_request = cfr_json.get_visit_request(model, visit)
+      break_duration = cfr_json.parse_duration_string(
+          visit_request.get("duration", "0s")
+      )
+      route_transformed_break_duration += break_duration
+
+      # Validate the time windows on the virtual shipment.
+      start_time, end_time = _get_break_start_end_time_from_shipment(
+          visit_request, vehicle_index, visit_index
+      )
+
+      # Update the break duration in the transition.
+      transition_break_duration = (
+          cfr_json.parse_duration_string(
+              transition_out.get("breakDuration", "0s")
+          )
+          + break_duration
+      )
+      transition_out["breakDuration"] = cfr_json.as_duration_string(
+          transition_break_duration
+      )
+      transition_out["totalDuration"] = cfr_json.as_duration_string(
+          transition_break_duration
+          + cfr_json.parse_duration_string(
+              transition_out.get("totalDuration", "0s")
+          )
+      )
+
+      # Update the visit duration of the virtual shipment (to 0).
+      visit_request["duration"] = "0s"
+
+      # Create a Break and a BreakRequest for the shipment.
+      break_duration_str = cfr_json.as_duration_string(break_duration)
+      new_break_requests.append({
+          "earliestStartTime": start_time,
+          "latestStartTime": end_time,
+          "minDuration": break_duration_str,
+      })
+      new_breaks.append({
+          "startTime": visit["startTime"],
+          "duration": break_duration_str,
+      })
+
+    # Merge break requests and breaks.
+    if new_breaks:
+      old_breaks = route.get("breaks", ())
+
+      break_rule = vehicle.get("breakRule")
+      if break_rule is None:
+        break_rule: cfr_json.BreakRule = {}
+        vehicle["breakRule"] = break_rule
+
+      old_break_requests = break_rule.get("breakRequests", ())
+
+      # Sort the new and the old breaks by their start time (while keeping their
+      # original indices on the side). Then, we sort the breaks by their start
+      # time and apply the same order to the merged breaks.
+      indexed_breaks = []
+      for i, old_break in enumerate(old_breaks):
+        indexed_breaks.append((old_break, i, None))
+      for i, new_break in enumerate(new_breaks):
+        indexed_breaks.append((new_break, None, i))
+      indexed_breaks.sort(
+          key=lambda brk: cfr_json.parse_time_string(brk[0]["startTime"])
+      )
+
+      merged_breaks = []
+      merged_break_requests = []
+      for a_break, old_index, new_index in indexed_breaks:
+        merged_breaks.append(a_break)
+        if old_index is not None:
+          merged_break_requests.append(old_break_requests[old_index])
+        if new_index is not None:
+          merged_break_requests.append(new_break_requests[new_index])
+      route["breaks"] = merged_breaks
+      break_rule["breakRequests"] = merged_break_requests
+
+    transformed_break_duration += route_transformed_break_duration
+
+    route_metrics = route.get("metrics")
+    if route_metrics is not None:
+      _update_break_duration_in_metrics(
+          route_metrics, route_transformed_break_duration
+      )
+
+  response_metrics = response.get("metrics")
+  if response_metrics is not None:
+    aggregated_metrics = response_metrics.get("aggregatedRouteMetrics")
+    if aggregated_metrics is not None:
+      _update_break_duration_in_metrics(
+          aggregated_metrics, transformed_break_duration
+      )
+
+
+def _get_break_start_end_time_from_shipment(
+    visit_request: cfr_json.VisitRequest, vehicle_index, visit_index
+) -> tuple[cfr_json.TimeString, cfr_json.TimeString]:
+  """Gets the start and end times for a break from a virtual shipment."""
+  time_windows = visit_request.get("timeWindows", ())
+  if len(time_windows) != 1:
+    raise ValueError(
+        f"Vehicle {vehicle_index}, visit {visit_index} is a break: expected"
+        f" a single time window, found {time_windows=}"
+    )
+  time_window = time_windows[0]
+  start_time = time_window.get("startTime")
+  end_time = time_window.get("endTime")
+  if (
+      start_time is None
+      or end_time is None
+      or "softStartTime" in time_window
+      or "softEndTime" in time_window
+  ):
+    raise ValueError(
+        f"Vehicle {vehicle_index}, visit {visit_index} is a break: expected"
+        " the time window to have exactly `startTime` and `endTime`. Found"
+        f" {time_window=}"
+    )
+  return start_time, end_time
+
+
+def _update_break_duration_in_metrics(
+    metrics: cfr_json.AggregatedMetrics,
+    transformed_break_duration: datetime.timedelta,
+) -> None:
+  """Shifts the given amount of time from visit duration to break duration."""
+  visit_duration = cfr_json.parse_duration_string(
+      metrics.get("visitDuration", "0s")
+  )
+  break_duration = cfr_json.parse_duration_string(
+      metrics.get("breakDuration", "0s")
+  )
+  metrics["visitDuration"] = cfr_json.as_duration_string(
+      visit_duration - transformed_break_duration
+  )
+  metrics["breakDuration"] = cfr_json.as_duration_string(
+      break_duration + transformed_break_duration
+  )
