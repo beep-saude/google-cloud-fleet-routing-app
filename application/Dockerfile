@@ -6,7 +6,7 @@ WORKDIR /usr/src/app
 COPY frontend/package.json ./package.tmp.json
 COPY frontend/package.exclude.json ./package.exclude.json
 # strip packages specific to lint and test
-RUN npm install -g json-merger && \
+RUN npm install -g npm@latest && npm install -g json-merger && \
   json-merger package.tmp.json package.exclude.json > package.json && \
   rm package.tmp.json && \
   rm package.exclude.json && \
